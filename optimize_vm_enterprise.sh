@@ -2413,10 +2413,19 @@ main() {
 ║     Professional Virtual Memory Optimization Tool                ║
 ║                                                                   ║
 ║     使用业界标准测试工具和商业级优化算法                         ║
+║     🤖 智能模式：自动检测并应用所有优化                          ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
 EOF
     echo -e "${NC}"
+    echo ""
+    printf "${GREEN}工作流程：${NC}\n"
+    echo "  1️⃣  深度性能测试（CPU、内存、磁盘）"
+    echo "  2️⃣  计算最优虚拟内存参数"
+    echo "  3️⃣  对比当前配置与推荐配置"
+    echo "  4️⃣  自动应用所有需要的优化"
+    echo "  5️⃣  永久保存配置并备份原设置"
+    echo ""
     
     # 环境检查
     check_root
@@ -2424,7 +2433,16 @@ EOF
     
     echo ""
     log_warn "性能测试将执行约2-3分钟，请耐心等待..."
-    read -p "按Enter键开始测试..." 
+    log_info "脚本将自动完成：测试 → 分析 → 对比 → 应用优化"
+    echo ""
+    printf "${CYAN}准备开始...${NC}"
+    sleep 1
+    printf " 3"
+    sleep 1
+    printf " 2"
+    sleep 1
+    printf " 1${NC}\n"
+    echo ""
     
     # 执行深度性能测试
     deep_cpu_benchmark
@@ -2449,37 +2467,48 @@ EOF
         ((change_count++))
     done
     
-    # 询问是否应用
+    # 自动应用变更（不需要询问）
     echo ""
     if [ $change_count -eq 0 ]; then
-        printf "${GREEN}✅ 恭喜！您的系统虚拟内存参数已经是最优配置！${NC}\n"
-        log_info "无需进行任何变更"
-    else
-        printf "${YELLOW}检测到 ${change_count} 项参数需要优化${NC}\n"
+        printf "${GREEN}╔═══════════════════════════════════════════════════════════════════╗${NC}\n"
+        printf "${GREEN}║                   ✅ 系统已是最优配置                             ║${NC}\n"
+        printf "${GREEN}╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
         echo ""
-        read -p "是否应用以上优化配置? (y/n): " apply_choice
+        log_success "恭喜！您的系统虚拟内存参数已经是最优配置！"
+        log_info "所有参数均与推荐值一致，无需进行任何变更"
+    else
+        printf "${YELLOW}╔═══════════════════════════════════════════════════════════════════╗${NC}\n"
+        printf "${YELLOW}║              🔧 检测到 ${change_count} 项参数需要优化                         ║${NC}\n"
+        printf "${YELLOW}╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
+        echo ""
+        log_warn "检测到参数与推荐值不一致，正在自动应用优化..."
+        echo ""
         
-        if [ "$apply_choice" = "y" ] || [ "$apply_choice" = "Y" ]; then
-            apply_optimizations
-            
-            # 处理Swap变更（自动应用模式）
-            if [ "${VM_PARAM_DIFF[swap_size]}" = "变更" ]; then
-                echo ""
-                manage_swap_advanced "auto"
-            else
-                echo ""
-                log_success "Swap大小已是最优值，无需调整"
-            fi
-            
+        # 自动应用优化
+        apply_optimizations
+        
+        # 处理Swap变更（自动应用模式）
+        if [ "${VM_PARAM_DIFF[swap_size]}" = "变更" ]; then
             echo ""
-            log_success "═══════════════════════════════════════════════════"
-            log_success "    ✅ 优化完成！"
-            log_success "    📊 已应用 ${change_count} 项参数变更"
-            log_success "    🔄 建议重启系统以确保所有设置完全生效"
-            log_success "═══════════════════════════════════════════════════"
+            manage_swap_advanced "auto"
         else
-            log_info "未应用任何更改，但已生成详细报告供参考"
+            echo ""
+            log_success "Swap大小已是最优值，无需调整"
         fi
+        
+        echo ""
+        printf "${GREEN}╔═══════════════════════════════════════════════════════════════════╗${NC}\n"
+        printf "${GREEN}║                      ✅ 优化成功完成                              ║${NC}\n"
+        printf "${GREEN}╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
+        echo ""
+        log_success "📊 已成功自动应用 ${change_count} 项参数变更"
+        log_success "💾 配置已永久保存到 /etc/sysctl.conf"
+        log_success "📁 原配置已备份到 /etc/sysctl.conf.backup.$(date +%Y%m%d)_*"
+        echo ""
+        log_warn "🔄 强烈建议重启系统以确保所有设置完全生效："
+        printf "${CYAN}     sudo reboot${NC}\n"
+        echo ""
+        printf "${GREEN}═══════════════════════════════════════════════════════════════════${NC}\n"
     fi
     
     echo ""
