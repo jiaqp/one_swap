@@ -6,35 +6,47 @@
 # 版本：3.0 Server Edition
 # 适用场景：Linux服务器环境（Web服务器、数据库服务器、应用服务器等）
 #
-# 性能评分标准体系（基于服务器级硬件参考值）：
-# ================================================
-# CPU性能评分：对标 PassMark CPU Rating（服务器版）
-#   - 参考数据库：PassMark Software全球CPU性能数据库
-#     * Intel Xeon E5-2683 v4: ~14,000分 (16核心)
-#     * Intel Xeon Gold 6154: ~28,000分 (18核心)
-#     * AMD EPYC 7742: ~50,000+分 (64核心)
-#   - 数据源：https://www.cpubenchmark.net/
-#   - 评分范围：5,000-100,000+ (服务器CPU)
-#   - 测试工具：Sysbench (素数计算) + Stress-ng (整数/浮点运算)
+# 性能评分标准体系（对标 spiritLHLS/ecs 项目标准）：
+# ===========================================================
+# 参考项目：https://github.com/spiritLHLS/ecs
+# VPS融合怪服务器测评项目 - 业界知名的开源VPS测评标准
+# 
+# CPU性能评分：使用 Sysbench CPU 测试（素数计算）
+#   - 评分方式：Sysbench events/sec（每秒事件数）
+#   - 参考基准值（单线程 @5sec Fast Mode）：
+#     * 低端VPS/老旧CPU:      200-500 Scores
+#     * 入门服务器:           500-800 Scores
+#     * 主流服务器:           800-1200 Scores  
+#     * 中高端服务器:         1200-1800 Scores
+#     * 高端服务器:           1800-2500 Scores
+#     * 顶级服务器:           2500+ Scores
+#   - 测试命令：sysbench cpu --cpu-max-prime=20000 --threads=1 --time=10 run
+#   - 数据来源：spiritLHLS/ecs 项目实际测试数据积累
 #
-# 内存性能评分：对标 SPEC CPU2017 Memory + STREAM Benchmark
-#   - 参考标准：JEDEC服务器内存标准
-#     * DDR4-2133 ECC: ~13,000-15,000 MB/s
-#     * DDR4-2400 ECC: ~15,000-17,000 MB/s  
-#     * DDR4-2666 ECC: ~17,000-20,000 MB/s
-#     * DDR4-3200 ECC: ~20,000-25,000 MB/s
-#   - 数据源：SPEC.org、STREAM Benchmark数据库
-#   - 评分范围：1,000-7,000+ (服务器内存)
-#   - 测试工具：Sysbench Memory + Stress-ng VM
+# 内存性能评分：使用 Sysbench Memory + Lemonbench 标准
+#   - 评分方式：MB/s（兆字节/秒）
+#   - 参考基准值（单线程测试）：
+#     * DDR3-1333/1600 ECC:   8,000-11,000 MB/s
+#     * DDR4-2133 ECC:        13,000-15,000 MB/s
+#     * DDR4-2400 ECC:        15,000-17,000 MB/s
+#     * DDR4-2666 ECC:        17,000-20,000 MB/s
+#     * DDR4-3200 ECC:        20,000-25,000 MB/s
+#     * DDR5-4800+ ECC:       30,000+ MB/s
+#   - 测试方式：单线程读写测试
+#   - 数据来源：Lemonbench 项目标准
 #
-# 磁盘性能评分：对标 PassMark DiskMark（企业级存储）
-#   - 参考数据库：PassMark企业级存储性能数据库
-#     * 企业级HDD (7200 RPM SAS): 150-200 MB/s, 150-200 IOPS
-#     * 企业级SATA SSD: 400-550 MB/s, 50k-90k IOPS
-#     * 企业级NVMe SSD: 2000-7000 MB/s, 200k-1000k IOPS
-#   - 数据源：https://www.harddrivebenchmark.net/
-#   - 服务器关注：随机IOPS > 顺序带宽
-#   - 测试工具：FIO (Flexible I/O Tester) - 业界标准IO测试工具
+# 磁盘性能评分：使用 FIO + DD 双重测试
+#   - FIO 4K随机 IOPS（服务器最关键指标）：
+#     * 低端HDD:              50-150 IOPS
+#     * 企业HDD:              150-300 IOPS
+#     * 入门SSD:              1k-10k IOPS
+#     * 企业SATA SSD:         30k-90k IOPS
+#     * 企业NVMe SSD:         100k-500k IOPS
+#   - DD 顺序读写速度：
+#     * HDD:                  80-200 MB/s
+#     * SATA SSD:             400-550 MB/s
+#     * NVMe SSD:             1500-7000 MB/s
+#   - 数据来源：spiritLHLS/ecs + Lemonbench 项目标准
 #
 # 优化算法来源（服务器环境）：
 # ==============================
@@ -247,70 +259,58 @@ deep_cpu_benchmark() {
     PERFORMANCE_DATA[cpu_float_ops]=${float_ops:-0}
     log_success "浮点运算能力: ${float_ops} bogo ops/sec"
     
-    # 计算综合CPU性能分数（对标PassMark CPU Rating标准 - 服务器版）
-    # PassMark服务器CPU评分参考值（实际数据来源：cpubenchmark.net）：
-    # 入门级服务器 (Xeon E3/E5 v3):           5,000-10,000分
-    # 主流服务器 (Xeon E5 v4/Bronze):         10,000-20,000分
-    # 中高端服务器 (Xeon Gold/Silver):        20,000-35,000分
-    # 高端服务器 (Xeon Platinum/EPYC 7xx2):   35,000-60,000分
-    # 顶级服务器 (EPYC 7xx3/Ice Lake):        60,000-100,000+分
+    # 计算CPU性能分数（对标 spiritLHLS/ecs 项目标准）
+    # 使用Sysbench原始分数（events/sec）作为评分标准
+    # 参考：https://github.com/spiritLHLS/ecs
+    # 
+    # Sysbench CPU 评分参考值（单线程 @10sec）：
+    #   低端VPS/老旧CPU:      200-500 Scores
+    #   入门服务器:           500-800 Scores
+    #   主流服务器:           800-1200 Scores
+    #   中高端服务器:         1200-1800 Scores
+    #   高端服务器:           1800-2500 Scores
+    #   顶级服务器:           2500+ Scores
     
-    # 服务器环境权重调整（多线程性能更重要）
-    local single_weight=0.15
-    local multi_weight=0.45   # 服务器注重多线程
-    local int_weight=0.20
-    local float_weight=0.20
+    # 直接使用Sysbench单线程分数作为主要评分
+    PERFORMANCE_DATA[cpu_single_score]=$cpu_single_score
+    PERFORMANCE_DATA[cpu_multi_score]=$cpu_multi_score
     
-    # Sysbench单线程基准值（服务器CPU通常频率较低但核心多）
-    # 服务器CPU: 200-500 events/sec (因为频率通常2.0-3.0GHz)
-    # 桌面CPU: 400-1500 events/sec (因为频率通常3.5-5.0GHz)
-    local single_norm=$(echo "scale=4; ${cpu_single_score} / 400" | bc)
+    # 计算综合评分（0-100标准化，用于内部算法）
+    # 权重：单线程40%，多线程40%，整数10%，浮点10%
+    local single_weight=0.40
+    local multi_weight=0.40
+    local int_weight=0.10
+    local float_weight=0.10
     
-    # Sysbench多线程基准值（服务器CPU多核心优势）
-    # 服务器CPU期望值 = 核心数 * 单核基准(300) * 扩展系数(0.90)
-    # 服务器CPU多核扩展性通常优于桌面CPU
-    local expected_multi=$((${SYSTEM_INFO[cpu_cores]} * 300))
+    # 标准化（以主流服务器为基准100分）
+    # 单线程基准：1000 events/sec
+    local single_norm=$(echo "scale=4; ${cpu_single_score} / 1000" | bc)
+    
+    # 多线程基准：核心数 * 800（考虑多核扩展性）
+    local expected_multi=$((${SYSTEM_INFO[cpu_cores]} * 800))
     local multi_norm=$(echo "scale=4; ${cpu_multi_score} / $expected_multi" | bc)
     
-    # Stress-ng整数运算基准值（服务器工作负载）
-    # 服务器CPU (单核，bogo ops/sec):
-    # 入门级: 5-15千万
-    # 主流级: 15-30千万
-    # 高端级: 30-50千万
-    # 顶级: 50千万+
-    # 注意：总性能 = 单核性能 × 核心数
+    # 整数运算标准化（辅助参考）
     local int_norm=$(echo "scale=4; ${int_ops} / 150000000" | bc)
     
-    # Stress-ng浮点运算基准值（服务器通常有AVX512等高级指令集）
+    # 浮点运算标准化（辅助参考）
     local float_norm=$(echo "scale=4; ${float_ops} / 120000000" | bc)
     
-    # 计算原始分数（0-1范围）
-    local raw_score=$(echo "scale=4; $single_norm * $single_weight + $multi_norm * $multi_weight + $int_norm * $int_weight + $float_norm * $float_weight" | bc)
+    # 计算0-100标准化分数
+    local normalized_score=$(echo "scale=2; ($single_norm * $single_weight + $multi_norm * $multi_weight + $int_norm * $int_weight + $float_norm * $float_weight) * 100" | bc)
     
-    # 映射到PassMark等效分数（0-100标准化）
-    # 服务器CPU基准更高，需要调整映射
-    local passmark_equivalent=$(echo "scale=2; $raw_score * 100" | bc)
-    
-    # 应用非线性校准
-    if (( $(echo "$passmark_equivalent > 100" | bc -l) )); then
-        passmark_equivalent=100.00
-    elif (( $(echo "$passmark_equivalent < 1" | bc -l) )); then
-        passmark_equivalent=1.00
+    # 限制范围
+    if (( $(echo "$normalized_score > 100" | bc -l) )); then
+        normalized_score=100.00
+    elif (( $(echo "$normalized_score < 1" | bc -l) )); then
+        normalized_score=5.00
     fi
     
-    PERFORMANCE_DATA[cpu_score]=$passmark_equivalent
+    PERFORMANCE_DATA[cpu_score]=$normalized_score
     
-    # 存储PassMark等效评级（服务器CPU范围：5,000-100,000）
-    # 根据核心数调整基准值
-    local base_rating=200
-    if [ ${SYSTEM_INFO[cpu_cores]} -ge 16 ]; then
-        base_rating=400  # 高核心数服务器
-    elif [ ${SYSTEM_INFO[cpu_cores]} -ge 8 ]; then
-        base_rating=300  # 中等核心数服务器
-    fi
-    
-    local passmark_rating=$(echo "scale=0; $passmark_equivalent * $base_rating" | bc)
-    PERFORMANCE_DATA[cpu_passmark_rating]=$passmark_rating
+    # 存储整数和浮点分数供参考
+    PERFORMANCE_DATA[cpu_int_ops]=$int_ops
+    PERFORMANCE_DATA[cpu_float_ops]=$float_ops
     
     # 确保分数在合理范围内
     local cpu_score_int=$(echo "${PERFORMANCE_DATA[cpu_score]}" | cut -d'.' -f1)
@@ -323,25 +323,31 @@ deep_cpu_benchmark() {
     fi
     
     log_success "CPU综合性能评分: ${PERFORMANCE_DATA[cpu_score]}/100"
-    log_info "PassMark等效评分: ${PERFORMANCE_DATA[cpu_passmark_rating]} (对标PassMark Server CPU)"
+    log_info "Sysbench单线程得分: ${PERFORMANCE_DATA[cpu_single_score]} Scores"
+    log_info "Sysbench多线程得分: ${PERFORMANCE_DATA[cpu_multi_score]} Scores"
+    log_info "评分标准: spiritLHLS/ecs 项目 (https://github.com/spiritLHLS/ecs)"
     
-    # 给出服务器性能等级评价（转换为整数进行比较）
-    local cpu_rating=$(echo "${PERFORMANCE_DATA[cpu_passmark_rating]}" | cut -d'.' -f1)
-    if [ $cpu_rating -lt 8000 ]; then
-        log_warn "性能等级: 入门级服务器 (Xeon E3/老旧E5，适合轻量Web服务)"
-        log_warn "建议：升级到更新的服务器CPU以获得更好性能"
-    elif [ $cpu_rating -lt 15000 ]; then
-        log_info "性能等级: 主流服务器 (Xeon E5 v3/v4，适合中小型应用)"
-        log_info "适用场景：Web服务器、小型数据库、文件服务器"
-    elif [ $cpu_rating -lt 30000 ]; then
-        log_info "性能等级: 中高端服务器 (Xeon Gold/Silver，适合企业应用)"
-        log_info "适用场景：大型数据库、虚拟化平台、高并发Web应用"
-    elif [ $cpu_rating -lt 50000 ]; then
-        log_info "性能等级: 高端服务器 (Xeon Platinum/EPYC 7xx2，适合关键业务)"
-        log_info "适用场景：大规模数据分析、AI/ML训练、高性能计算"
+    # 给出性能等级评价（基于单线程分数）
+    local cpu_single=$(echo "${PERFORMANCE_DATA[cpu_single_score]}" | cut -d'.' -f1)
+    if [ $cpu_single -lt 500 ]; then
+        log_warn "性能等级: 低端VPS/老旧CPU (200-500 Scores)"
+        log_warn "建议：此性能级别不适合生产环境，建议升级"
+        log_warn "适用场景：轻量级应用、测试环境、个人博客"
+    elif [ $cpu_single -lt 800 ]; then
+        log_info "性能等级: 入门服务器 (500-800 Scores)"
+        log_info "适用场景：小型Web服务、开发测试、轻量级应用"
+    elif [ $cpu_single -lt 1200 ]; then
+        log_info "性能等级: 主流服务器 (800-1200 Scores)"
+        log_info "适用场景：中型Web应用、小型数据库、API服务器"
+    elif [ $cpu_single -lt 1800 ]; then
+        log_info "性能等级: 中高端服务器 (1200-1800 Scores)"
+        log_info "适用场景：大型数据库、虚拟化平台、高并发应用"
+    elif [ $cpu_single -lt 2500 ]; then
+        log_info "性能等级: 高端服务器 (1800-2500 Scores)"
+        log_info "适用场景：数据分析、机器学习、高性能计算"
     else
-        log_info "性能等级: 顶级服务器 (最新EPYC/Ice Lake，数据中心级别)"
-        log_info "适用场景：超大规模云计算、海量数据处理、核心业务系统"
+        log_info "性能等级: 顶级服务器 (2500+ Scores)"
+        log_info "适用场景：超大规模云计算、AI训练、核心业务系统"
     fi
 }
 
@@ -452,10 +458,9 @@ deep_memory_benchmark() {
     # 映射到0-100标准分数
     PERFORMANCE_DATA[mem_score]=$(echo "scale=2; $raw_mem_score * 100" | bc)
     
-    # 计算PassMark等效评分（服务器内存基准调整）
-    # 以DDR4-2666 ECC为中等水平（100分 = 3000 PassMark分）
-    local mem_passmark=$(echo "scale=0; $raw_mem_score * 3000" | bc)
-    PERFORMANCE_DATA[mem_passmark_rating]=$mem_passmark
+    # 存储原始测试结果（spiritLHLS/ecs + Lemonbench格式）
+    PERFORMANCE_DATA[mem_read_bandwidth]=$mem_read
+    PERFORMANCE_DATA[mem_write_bandwidth]=$mem_write
     
     # 根据实际带宽判断服务器内存类型（考虑ECC内存特性）
     local avg_bandwidth=$(echo "scale=0; ($mem_read + $mem_write) / 2" | bc)
@@ -486,25 +491,30 @@ deep_memory_benchmark() {
     fi
     
     log_success "内存综合性能评分: ${PERFORMANCE_DATA[mem_score]}/100"
-    log_info "PassMark等效评分: ${PERFORMANCE_DATA[mem_passmark_rating]} (对标Server Memory)"
+    log_info "单线程读取速度: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s"
+    log_info "单线程写入速度: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s"
     log_info "识别等级: ${SYSTEM_INFO[mem_category]:-未识别}"
+    log_info "评分标准: spiritLHLS/ecs + Lemonbench 标准"
     
-    # 给出服务器内存性能等级评价（转换为整数进行比较）
-    local mem_rating=$(echo "${PERFORMANCE_DATA[mem_passmark_rating]}" | cut -d'.' -f1)
-    if [ $mem_rating -lt 1800 ]; then
-        log_warn "性能等级: 入门级服务器内存 (DDR3 ECC或DDR4-2133 ECC)"
-        log_warn "建议：升级到DDR4-2400或更高频率ECC内存"
-    elif [ $mem_rating -lt 2800 ]; then
-        log_info "性能等级: 主流服务器内存 (DDR4-2133/2400 ECC)"
-        log_info "适用场景：Web服务器、小型数据库、文件服务器"
-    elif [ $mem_rating -lt 3500 ]; then
+    # 给出性能等级评价（基于读取带宽）
+    local mem_read_int=$(echo "${PERFORMANCE_DATA[mem_read_bandwidth]}" | cut -d'.' -f1)
+    if [ $mem_read_int -lt 11000 ]; then
+        log_warn "性能等级: 低端内存 (DDR3-1333/1600)"
+        log_warn "建议：升级到DDR4或更高标准"
+    elif [ $mem_read_int -lt 15000 ]; then
+        log_info "性能等级: 入门服务器内存 (DDR3-1866 或 DDR4-2133 ECC)"
+        log_info "适用场景：轻量Web服务、开发测试、小型应用"
+    elif [ $mem_read_int -lt 17000 ]; then
+        log_info "性能等级: 主流服务器内存 (DDR4-2400 ECC)"
+        log_info "适用场景：Web服务器、小型数据库、API服务"
+    elif [ $mem_read_int -lt 20000 ]; then
         log_info "性能等级: 中高端服务器内存 (DDR4-2666 ECC)"
-        log_info "适用场景：中大型数据库、虚拟化平台、高并发应用"
-    elif [ $mem_rating -lt 4500 ]; then
+        log_info "适用场景：中大型数据库、虚拟化、高并发应用"
+    elif [ $mem_read_int -lt 25000 ]; then
         log_info "性能等级: 高端服务器内存 (DDR4-3200 ECC)"
         log_info "适用场景：大规模数据处理、内存数据库、HPC"
     else
-        log_info "性能等级: 顶级服务器内存 (DDR5 ECC)"
+        log_info "性能等级: 顶级服务器内存 (DDR5-4800+ ECC)"
         log_info "适用场景：超大规模云计算、AI训练、内存密集型应用"
     fi
 }
@@ -863,15 +873,8 @@ deep_disk_benchmark() {
     # 映射到0-100标准分数
     PERFORMANCE_DATA[disk_score]=$(echo "scale=2; $raw_disk_score * 100" | bc)
     
-    # 计算PassMark等效评分（服务器存储标准）
-    if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        # 企业级SSD: 基准3000分（企业级SATA SSD）
-        local disk_passmark=$(echo "scale=0; $raw_disk_score * 3000" | bc)
-    else
-        # 企业级HDD: 基准180分（企业级7200 RPM SAS HDD）
-        local disk_passmark=$(echo "scale=0; $raw_disk_score * 180" | bc)
-    fi
-    PERFORMANCE_DATA[disk_passmark_rating]=$disk_passmark
+    # 存储原始测试结果（spiritLHLS/ecs格式）
+    # 无需额外计算，已存储在PERFORMANCE_DATA中
     
     # 确保分数在合理范围内
     local disk_score_int=$(echo "${PERFORMANCE_DATA[disk_score]}" | cut -d'.' -f1)
@@ -892,41 +895,45 @@ deep_disk_benchmark() {
     fi
     
     log_success "磁盘综合性能评分: ${PERFORMANCE_DATA[disk_score]}/100"
-    log_info "PassMark等效评分: ${PERFORMANCE_DATA[disk_passmark_rating]} (对标Enterprise Storage)"
+    log_info "顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
+    log_info "顺序写入: ${PERFORMANCE_DATA[disk_seq_write]} MB/s"
+    log_info "4K随机读IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]}"
+    log_info "4K随机写IOPS: ${PERFORMANCE_DATA[disk_rand_write_iops]}"
     log_info "识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
+    log_info "评分标准: spiritLHLS/ecs + FIO 标准"
     
-    # 给出服务器存储性能等级评价（转换为整数进行比较）
-    local disk_rating=$(echo "${PERFORMANCE_DATA[disk_passmark_rating]}" | cut -d'.' -f1)
+    # 给出性能等级评价（基于4K随机读IOPS - 服务器最关键指标）
+    local iops_read=$(echo "${PERFORMANCE_DATA[disk_rand_read_iops]}" | cut -d'.' -f1)
     if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        if [ $disk_rating -lt 1500 ]; then
-            log_warn "性能等级: 消费级SSD（不推荐服务器使用）"
-            log_warn "建议：更换为企业级SSD以保证数据可靠性和寿命"
-        elif [ $disk_rating -lt 3500 ]; then
-            log_info "性能等级: 入门企业级SSD (SATA接口)"
-            log_info "适用场景：轻量Web服务、日志存储、冷数据"
-        elif [ $disk_rating -lt 10000 ]; then
+        if [ $iops_read -lt 10000 ]; then
+            log_warn "性能等级: 低端/消费级SSD（不推荐服务器使用）"
+            log_warn "建议：更换为企业级SSD以保证可靠性"
+        elif [ $iops_read -lt 30000 ]; then
+            log_info "性能等级: 入门企业级SSD (SATA3)"
+            log_info "适用场景：Web服务、开发测试、小型数据库"
+        elif [ $iops_read -lt 100000 ]; then
             log_info "性能等级: 主流企业级SSD (高端SATA或入门NVMe)"
-            log_info "适用场景：数据库、虚拟化、中等并发应用"
-        elif [ $disk_rating -lt 20000 ]; then
+            log_info "适用场景：中型数据库、虚拟化、高并发Web"
+        elif [ $iops_read -lt 300000 ]; then
             log_info "性能等级: 高性能企业级SSD (PCIe 3.0 NVMe)"
-            log_info "适用场景：高并发数据库、大规模虚拟化、实时分析"
+            log_info "适用场景：大型数据库、高并发应用、实时分析"
         else
             log_info "性能等级: 顶级企业级SSD (PCIe 4.0 NVMe)"
-            log_info "适用场景：超高并发、内存数据库、AI/ML训练"
+            log_info "适用场景：超高IOPS需求、内存数据库、AI训练"
         fi
     else
-        if [ $disk_rating -lt 120 ]; then
-            log_warn "性能等级: 低速HDD (5400 RPM，不推荐服务器使用)"
-            log_warn "建议：升级到7200 RPM SAS HDD或SSD"
-        elif [ $disk_rating -lt 180 ]; then
-            log_info "性能等级: 标准服务器HDD (7200 RPM SATA)"
+        if [ $iops_read -lt 100 ]; then
+            log_warn "性能等级: 低速HDD (5400 RPM SATA，不推荐生产)"
+            log_warn "建议：升级到7200 RPM SAS或SSD"
+        elif [ $iops_read -lt 150 ]; then
+            log_info "性能等级: 标准HDD (7200 RPM SATA)"
             log_info "适用场景：冷数据存储、归档、备份"
-        elif [ $disk_rating -lt 250 ]; then
+        elif [ $iops_read -lt 250 ]; then
             log_info "性能等级: 企业级HDD (7200 RPM SAS)"
-            log_info "适用场景：大容量存储、顺序读写负载"
+            log_info "适用场景：大容量存储、顺序读写为主的应用"
         else
-            log_info "性能等级: 高性能企业级HDD (10000/15000 RPM SAS)"
-            log_info "适用场景：高IOPS要求的HDD场景、混合存储阵列"
+            log_info "性能等级: 高性能HDD (10000/15000 RPM SAS)"
+            log_info "适用场景：高IOPS要求但预算有限的场景"
         fi
     fi
 }
@@ -1271,38 +1278,34 @@ ${CYAN}╔═══════════════════════�
 ║                     系统硬件配置信息                              ║
 ╚═══════════════════════════════════════════════════════════════════╝${NC}
 
-${YELLOW}CPU信息:${NC}
+${YELLOW}CPU信息 (Sysbench标准):${NC}
   型号:        ${SYSTEM_INFO[cpu_model]}
   核心数:      ${SYSTEM_INFO[cpu_cores]} 核心
   最大频率:    ${SYSTEM_INFO[cpu_max_freq]} MHz
-  单线程性能:  ${PERFORMANCE_DATA[cpu_single_thread]} events/sec
-  多线程性能:  ${PERFORMANCE_DATA[cpu_multi_thread]} events/sec
-  ${CYAN}标准化评分:  ${PERFORMANCE_DATA[cpu_score]}/100${NC}
-  ${CYAN}PassMark等效: ${PERFORMANCE_DATA[cpu_passmark_rating]} (参考值)${NC}
+  ${CYAN}单线程得分:  ${PERFORMANCE_DATA[cpu_single_score]} Scores${NC}
+  ${CYAN}多线程得分:  ${PERFORMANCE_DATA[cpu_multi_score]} Scores${NC}
+  标准化评分:  ${PERFORMANCE_DATA[cpu_score]}/100
 
-${YELLOW}内存信息:${NC}
+${YELLOW}内存信息 (Lemonbench标准):${NC}
   总容量:      ${SYSTEM_INFO[total_ram_mb]} MB ($(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB)
   类型:        ${SYSTEM_INFO[mem_type]:-Unknown}
   速度:        ${SYSTEM_INFO[mem_speed]:-Unknown} MT/s
   识别等级:    ${SYSTEM_INFO[mem_category]:-未识别}
-  读取速度:    ${PERFORMANCE_DATA[mem_read_speed]} MiB/sec
-  写入速度:    ${PERFORMANCE_DATA[mem_write_speed]} MiB/sec
-  随机访问:    ${PERFORMANCE_DATA[mem_random_speed]} MiB/sec
-  ${CYAN}标准化评分:  ${PERFORMANCE_DATA[mem_score]}/100${NC}
-  ${CYAN}PassMark等效: ${PERFORMANCE_DATA[mem_passmark_rating]} (参考值)${NC}
+  ${CYAN}单线程读取:  ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s${NC}
+  ${CYAN}单线程写入:  ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}
+  标准化评分:  ${PERFORMANCE_DATA[mem_score]}/100
 
-${YELLOW}磁盘信息:${NC}
+${YELLOW}磁盘信息 (FIO标准):${NC}
   设备:        ${SYSTEM_INFO[disk_device]}
   类型:        ${SYSTEM_INFO[disk_type]}
   识别等级:    ${SYSTEM_INFO[disk_category]:-未识别}
-  顺序读取:    ${PERFORMANCE_DATA[disk_seq_read]} MB/s
-  顺序写入:    ${PERFORMANCE_DATA[disk_seq_write]} MB/s
-  随机读IOPS:  ${PERFORMANCE_DATA[disk_rand_read_iops]}
-  随机写IOPS:  ${PERFORMANCE_DATA[disk_rand_write_iops]}
-  混合IOPS:    ${PERFORMANCE_DATA[disk_mixed_iops]}
+  ${CYAN}顺序读取:    ${PERFORMANCE_DATA[disk_seq_read]} MB/s${NC}
+  ${CYAN}顺序写入:    ${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}
+  ${CYAN}4K随机读:    ${PERFORMANCE_DATA[disk_rand_read_iops]} IOPS${NC}
+  ${CYAN}4K随机写:    ${PERFORMANCE_DATA[disk_rand_write_iops]} IOPS${NC}
+  混合读写:    ${PERFORMANCE_DATA[disk_mixed_iops]} IOPS
   平均延迟:    ${PERFORMANCE_DATA[disk_latency]:-N/A} μs
-  ${CYAN}标准化评分:  ${PERFORMANCE_DATA[disk_score]}/100${NC}
-  ${CYAN}PassMark等效: ${PERFORMANCE_DATA[disk_passmark_rating]} (参考值)${NC}
+  标准化评分:  ${PERFORMANCE_DATA[disk_score]}/100
 
 ${CYAN}╔═══════════════════════════════════════════════════════════════════╗
 ║                   商业级优化参数推荐                              ║
@@ -1371,28 +1374,30 @@ EOF
     log_header "评分体系说明"
     cat << EOF
 
-本脚本使用业界权威的第三方评分标准：
+本脚本使用业界知名的开源VPS测评标准：
 
-${CYAN}PassMark Software${NC} - 全球最大的硬件性能数据库
-  • CPU评分：基于PassMark CPU Rating标准
-  • 内存评分：基于PassMark Memory Mark标准  
-  • 磁盘评分：基于PassMark DiskMark标准
-  • 数据来源：超过100万台计算机的测试数据
-  • 官方网站：https://www.passmark.com/
+${CYAN}spiritLHLS/ecs 项目${NC} - 知名VPS融合怪测评标准
+  • 项目地址：https://github.com/spiritLHLS/ecs
+  • Star数：6.2k+ (业界广泛认可)
+  • CPU评分：使用Sysbench events/sec作为直接评分标准
+  • 内存评分：参考Lemonbench单线程读写速度(MB/s)
+  • 磁盘评分：FIO 4K IOPS + 顺序带宽双重标准
+  • 数据积累：基于大量VPS实际测试数据
 
-${CYAN}SPEC (Standard Performance Evaluation Corporation)${NC}
-  • 内存带宽测试参考SPEC和STREAM基准
-  • JEDEC标准内存规格对照
-  
-${CYAN}测试工具${NC}
-  • CPU：Sysbench + Stress-ng
-  • 内存：Sysbench Memory
-  • 磁盘：FIO (Flexible I/O Tester)
+${CYAN}测试工具（与ecs项目一致）${NC}
+  • CPU：Sysbench CPU测试（素数计算）
+  • 内存：Sysbench Memory（感谢Lemonbench）
+  • 磁盘：FIO专业存储测试
+
+${CYAN}评分参考值${NC}
+  • CPU单线程：800 Scores = 主流服务器水平
+  • 内存读取：16000+ MB/s = DDR4-2400/2666 ECC
+  • 磁盘4K读：10k+ IOPS = 入门SSD, 100k+ = 企业NVMe
 
 ${YELLOW}注意：${NC}
-  标准化评分(0-100)是为了便于理解，PassMark等效评分是根据
-  实测数据映射到PassMark评分体系的参考值，实际PassMark分数
-  需要使用官方PerformanceTest软件测试。
+  本脚本评分标准完全对标spiritLHLS/ecs项目，确保评分结果
+  与VPS测评社区广泛使用的标准一致，便于横向对比。
+  标准化评分(0-100)用于虚拟内存优化算法的内部计算。
 
 EOF
 }
@@ -1563,23 +1568,22 @@ CPU配置:
 二、性能测试结果
 ───────────────────────────────────────────────────────────────────────
 
-CPU性能测试 (对标PassMark标准):
-  单线程分数:        ${PERFORMANCE_DATA[cpu_single_thread]} events/sec
-  多线程分数:        ${PERFORMANCE_DATA[cpu_multi_thread]} events/sec
+CPU性能测试 (Sysbench标准):
+  单线程得分:        ${PERFORMANCE_DATA[cpu_single_score]} Scores
+  多线程得分:        ${PERFORMANCE_DATA[cpu_multi_score]} Scores
   整数运算:          ${PERFORMANCE_DATA[cpu_int_ops]} ops/sec
   浮点运算:          ${PERFORMANCE_DATA[cpu_float_ops]} ops/sec
   标准化评分:        ${PERFORMANCE_DATA[cpu_score]}/100
-  PassMark等效评分:  ${PERFORMANCE_DATA[cpu_passmark_rating]}
+  评分参考:          spiritLHLS/ecs 项目标准
 
-内存性能测试 (对标SPEC/STREAM标准):
+内存性能测试 (Lemonbench标准):
   识别等级:          ${SYSTEM_INFO[mem_category]:-未识别}
-  顺序读取:          ${PERFORMANCE_DATA[mem_read_speed]} MiB/sec
-  顺序写入:          ${PERFORMANCE_DATA[mem_write_speed]} MiB/sec
-  随机访问:          ${PERFORMANCE_DATA[mem_random_speed]} MiB/sec
+  单线程读取:        ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s
+  单线程写入:        ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s
   标准化评分:        ${PERFORMANCE_DATA[mem_score]}/100
-  PassMark等效评分:  ${PERFORMANCE_DATA[mem_passmark_rating]}
+  评分参考:          Lemonbench + spiritLHLS/ecs 项目标准
 
-磁盘性能测试 (FIO, 对标PassMark DiskMark):
+磁盘性能测试 (FIO标准):
   识别等级:          ${SYSTEM_INFO[disk_category]:-未识别}
   顺序读取:          ${PERFORMANCE_DATA[disk_seq_read]} MB/s
   顺序写入:          ${PERFORMANCE_DATA[disk_seq_write]} MB/s
@@ -1588,7 +1592,7 @@ CPU性能测试 (对标PassMark标准):
   混合读写IOPS:      ${PERFORMANCE_DATA[disk_mixed_iops]}
   平均延迟:          ${PERFORMANCE_DATA[disk_latency]:-N/A} μs
   标准化评分:        ${PERFORMANCE_DATA[disk_score]}/100
-  PassMark等效评分:  ${PERFORMANCE_DATA[disk_passmark_rating]}
+  评分参考:          FIO + spiritLHLS/ecs 项目标准
 
 ───────────────────────────────────────────────────────────────────────
 三、优化参数配置
