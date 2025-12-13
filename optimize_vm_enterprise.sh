@@ -1423,22 +1423,48 @@ deep_disk_benchmark() {
     log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
-    # 设置虚拟化环境标记
+    # 设置虚拟化环境标记（增强检测）
     local is_virtualized=0
     local virt_warning=""
     
     local seq_read_val=${PERFORMANCE_DATA[disk_seq_read]:-0}
     local iops_read_val=${PERFORMANCE_DATA[disk_rand_read_iops]:-0}
+    local disk_dev=${SYSTEM_INFO[disk_device]:-"/dev/sda"}
     
-    if [ "${SYSTEM_INFO[disk_type]}" = "HDD" ] && (( $(echo "$seq_read_val > 500 && $iops_read_val < 1000" | bc -l) )); then
+    # 检测方法1: 设备名特征（VirtIO设备）
+    if [[ "$disk_dev" =~ vd[a-z]|xvd[a-z] ]]; then
         is_virtualized=1
-        SYSTEM_INFO[is_virtualized]="是（宿主机SSD，虚拟盘IOPS受限）"
-        virt_warning="⚠️ 虚拟化环境：顺序${seq_read_val}MB/s vs IOPS ${iops_read_val}"
-        PERFORMANCE_DATA[disk_virt_warning]="$virt_warning"
-    elif [ "${SYSTEM_INFO[disk_type]}" = "SSD" ] && (( $(echo "$seq_read_val > 1000 && $iops_read_val < 10000" | bc -l) )); then
-        is_virtualized=1
-        SYSTEM_INFO[is_virtualized]="是（SSD虚拟化受限）"
-        virt_warning="⚠️ SSD虚拟化环境：IOPS性能受限"
+        log_info "检测到虚拟化设备: $disk_dev (VirtIO/Xen)"
+    fi
+    
+    # 检测方法2: 性能特征分析
+    if [ "${SYSTEM_INFO[disk_type]}" = "HDD" ]; then
+        # HDD虚拟化检测：顺序速度异常高 或 IOPS极低
+        if (( $(echo "$seq_read_val > 500 && $iops_read_val < 1000" | bc -l) )); then
+            is_virtualized=1
+        # 新增：即使顺序速度低，但极低IOPS也可能是虚拟化
+        elif (( $(echo "$iops_read_val < 200 && $seq_read_val < 300" | bc -l) )); then
+            is_virtualized=1
+        fi
+    else
+        # SSD虚拟化检测
+        if (( $(echo "$seq_read_val > 1000 && $iops_read_val < 10000" | bc -l) )); then
+            is_virtualized=1
+        fi
+    fi
+    
+    # 设置虚拟化标记和警告信息
+    if [ $is_virtualized -eq 1 ]; then
+        if [ "${SYSTEM_INFO[disk_type]}" = "HDD" ] && (( $(echo "$seq_read_val > 500" | bc -l) )); then
+            SYSTEM_INFO[is_virtualized]="是（宿主机SSD，虚拟盘IOPS受限）"
+            virt_warning="⚠️ 虚拟化环境：顺序${seq_read_val}MB/s vs IOPS ${iops_read_val}"
+        elif [ "${SYSTEM_INFO[disk_type]}" = "HDD" ]; then
+            SYSTEM_INFO[is_virtualized]="是（虚拟化HDD，低IOPS）"
+            virt_warning="⚠️ 虚拟化环境：IOPS ${iops_read_val} 极低"
+        else
+            SYSTEM_INFO[is_virtualized]="是（SSD虚拟化受限）"
+            virt_warning="⚠️ SSD虚拟化环境：IOPS性能受限"
+        fi
         PERFORMANCE_DATA[disk_virt_warning]="$virt_warning"
     else
         SYSTEM_INFO[is_virtualized]="否"
@@ -1863,14 +1889,30 @@ compare_vm_parameters() {
         ((diff_count++))
     fi
     
-    # Swap大小检查（差异超过20%才标记）
+    # Swap大小检查（智能阈值：小内存10%，大内存20%）
     local current_swap=${ORIGINAL_VM_PARAMS[current_swap]:-0}
     local optimal_swap=${PERFORMANCE_DATA[optimal_swap]:-0}
     local swap_diff=$((optimal_swap - current_swap))
     local swap_diff_abs=${swap_diff#-}
-    local swap_threshold=$((optimal_swap / 5))
     
-    if [ $current_swap -eq 0 ] || [ $swap_diff_abs -gt $swap_threshold ]; then
+    # 动态阈值：<2GB内存用10%，>=2GB用20%
+    local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
+    local swap_threshold
+    if [ $ram_mb -lt 2048 ]; then
+        # 小内存系统：10%阈值（更精确）
+        swap_threshold=$((optimal_swap / 10))
+    else
+        # 大内存系统：20%阈值（容忍度更高）
+        swap_threshold=$((optimal_swap / 5))
+    fi
+    
+    # 判断是否需要变更
+    if [ $current_swap -eq 0 ]; then
+        # 无Swap：必须创建
+        VM_PARAM_DIFF[swap_size]="变更"
+        ((diff_count++))
+    elif [ $swap_diff_abs -gt $swap_threshold ]; then
+        # 差异超过阈值：需要调整
         VM_PARAM_DIFF[swap_size]="变更"
         ((diff_count++))
     fi
@@ -2204,11 +2246,22 @@ apply_optimizations() {
     log_warn "检测到 ${total_changes} 项参数需要优化"
     echo ""
     
-    # 备份现有配置
-    local backup_file="/etc/sysctl.conf.backup.$(date +%Y%m%d_%H%M%S)"
-    if [ -f /etc/sysctl.conf ]; then
-        cp /etc/sysctl.conf $backup_file
-        log_success "已备份配置到: $backup_file"
+    # 检查磁盘空间并尝试备份（但不阻止后续操作）
+    local available_space=$(df /etc | tail -1 | awk '{print $4}')
+    local backup_success=0
+    
+    if [ $available_space -gt 512 ]; then
+        # 空间充足，尝试备份
+        local backup_file="/etc/sysctl.conf.backup.$(date +%Y%m%d_%H%M%S)"
+        if [ -f /etc/sysctl.conf ] && cp /etc/sysctl.conf $backup_file 2>/dev/null; then
+            log_success "已备份配置到: $backup_file"
+            backup_success=1
+        fi
+    fi
+    
+    if [ $backup_success -eq 0 ]; then
+        log_warn "⚠️  磁盘空间不足，跳过备份（剩余${available_space}KB）"
+        log_info "直接覆盖配置以确保永久生效（代理服务器模式）"
     fi
     
     # 实时应用有差异的参数
@@ -2279,44 +2332,65 @@ apply_optimizations() {
     echo ""
     log_success "已实时应用 ${applied_count} 项参数变更"
     
-    # 写入配置文件永久生效
+    # 强制写入配置文件永久生效（代理服务器模式）
     log_progress "写入/etc/sysctl.conf使配置永久生效..."
     
-    # 移除旧的vm配置
-    if [ -f /etc/sysctl.conf ]; then
-        sed -i '/^vm\./d' /etc/sysctl.conf
-        sed -i '/# ===.*虚拟内存优化/,/^$/d' /etc/sysctl.conf
+    # 如果空间不足，先尝试清理
+    if [ $available_space -lt 256 ]; then
+        log_warn "磁盘空间极低，尝试自动清理..."
+        # 清理旧的备份文件
+        find /etc -name "sysctl.conf.backup.*" -mtime +7 -delete 2>/dev/null
+        # 清理FIO测试残留
+        rm -rf /tmp/fio_* 2>/dev/null
+        log_info "已清理临时文件"
     fi
     
-    # 写入新配置
-    cat >> /etc/sysctl.conf << EOF
-
-# ======================================================================
-# 虚拟内存专业级优化配置
-# 生成时间: $(date '+%Y-%m-%d %H:%M:%S')
-# 系统配置: ${SYSTEM_INFO[cpu_cores]}核CPU, ${SYSTEM_INFO[total_ram_mb]}MB RAM, ${SYSTEM_INFO[disk_type]}
-# 性能评分: CPU=${PERFORMANCE_DATA[cpu_score]}, MEM=${PERFORMANCE_DATA[mem_score]}, DISK=${PERFORMANCE_DATA[disk_score]}
-# ======================================================================
-
-# 核心Swap参数
-vm.swappiness = ${PERFORMANCE_DATA[optimal_swappiness]}
-vm.vfs_cache_pressure = ${PERFORMANCE_DATA[vfs_cache_pressure]}
-
-# 脏页管理
-vm.dirty_ratio = ${PERFORMANCE_DATA[dirty_ratio]}
-vm.dirty_background_ratio = ${PERFORMANCE_DATA[dirty_background_ratio]}
-vm.dirty_expire_centisecs = ${PERFORMANCE_DATA[dirty_expire]}
-vm.dirty_writeback_centisecs = ${PERFORMANCE_DATA[dirty_writeback]}
-
-# 内存管理
-vm.min_free_kbytes = ${PERFORMANCE_DATA[min_free_kbytes]}
-vm.page_cluster = ${PERFORMANCE_DATA[page_cluster]}
-vm.overcommit_memory = ${PERFORMANCE_DATA[overcommit_memory]}
-vm.overcommit_ratio = ${PERFORMANCE_DATA[overcommit_ratio]}
-
-EOF
+    # 移除旧的vm配置（使用更鲁棒的方法）
+    if [ -f /etc/sysctl.conf ]; then
+        # 方法1: 使用grep排除（不需要写临时文件）
+        grep -v "^vm\." /etc/sysctl.conf > /tmp/sysctl.tmp 2>/dev/null && mv /tmp/sysctl.tmp /etc/sysctl.conf 2>/dev/null
+        
+        # 移除旧的注释块
+        sed -i '/# ===.*虚拟内存优化/,/^$/d' /etc/sysctl.conf 2>/dev/null || true
+    fi
     
-    log_success "配置已写入/etc/sysctl.conf"
+    # 使用精简格式写入配置（减少空间占用）
+    {
+        echo ""
+        echo "# VM优化 $(date +%Y%m%d)"
+        echo "vm.swappiness=${PERFORMANCE_DATA[optimal_swappiness]}"
+        echo "vm.vfs_cache_pressure=${PERFORMANCE_DATA[vfs_cache_pressure]}"
+        echo "vm.dirty_ratio=${PERFORMANCE_DATA[dirty_ratio]}"
+        echo "vm.dirty_background_ratio=${PERFORMANCE_DATA[dirty_background_ratio]}"
+        echo "vm.dirty_expire_centisecs=${PERFORMANCE_DATA[dirty_expire]}"
+        echo "vm.dirty_writeback_centisecs=${PERFORMANCE_DATA[dirty_writeback]}"
+        echo "vm.min_free_kbytes=${PERFORMANCE_DATA[min_free_kbytes]}"
+        echo "vm.page_cluster=${PERFORMANCE_DATA[page_cluster]}"
+        echo "vm.overcommit_memory=${PERFORMANCE_DATA[overcommit_memory]}"
+        echo "vm.overcommit_ratio=${PERFORMANCE_DATA[overcommit_ratio]}"
+    } >> /etc/sysctl.conf 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        log_success "✅ 配置已永久保存到 /etc/sysctl.conf"
+        log_info "重启后自动生效，无需手动干预"
+    else
+        # 最后的fallback：直接使用sysctl命令写入
+        log_warn "标准方式写入失败，使用备用方法..."
+        {
+            sysctl -w vm.swappiness=${PERFORMANCE_DATA[optimal_swappiness]} 2>/dev/null
+            sysctl -w vm.vfs_cache_pressure=${PERFORMANCE_DATA[vfs_cache_pressure]} 2>/dev/null
+            sysctl -w vm.dirty_ratio=${PERFORMANCE_DATA[dirty_ratio]} 2>/dev/null
+            sysctl -w vm.dirty_background_ratio=${PERFORMANCE_DATA[dirty_background_ratio]} 2>/dev/null
+            sysctl -w vm.dirty_expire_centisecs=${PERFORMANCE_DATA[dirty_expire]} 2>/dev/null
+            sysctl -w vm.dirty_writeback_centisecs=${PERFORMANCE_DATA[dirty_writeback]} 2>/dev/null
+            sysctl -w vm.min_free_kbytes=${PERFORMANCE_DATA[min_free_kbytes]} 2>/dev/null
+            sysctl -w vm.page_cluster=${PERFORMANCE_DATA[page_cluster]} 2>/dev/null
+            sysctl -w vm.overcommit_memory=${PERFORMANCE_DATA[overcommit_memory]} 2>/dev/null
+            sysctl -w vm.overcommit_ratio=${PERFORMANCE_DATA[overcommit_ratio]} 2>/dev/null
+        } > /dev/null 2>&1
+        log_warn "⚠️  配置文件写入失败，但运行时参数已生效"
+        log_info "💡 建议清理磁盘空间后重新运行以确保重启后配置仍有效"
+    fi
 }
 
 # 管理Swap分区/文件
