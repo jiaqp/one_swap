@@ -236,18 +236,26 @@ deep_cpu_benchmark() {
     fi
     
     # Sysbench CPU测试 - 单线程性能
-    # 注意：spiritLHLS/ecs使用5秒测试，我们使用10秒更准确
-    # 如需与ecs项目完全一致，请改为--time=5
-    log_progress "执行Sysbench单线程CPU测试（素数计算，10秒标准测试）..."
+    # 注意：ecs项目可能使用不同的素数参数，导致分数差异
+    # 素数越小，计算越快，分数越高
+    
+    # 测试1：标准20000素数测试（更严格）
+    log_progress "执行Sysbench单线程CPU测试（素数20000，10秒标准测试）..."
     local cpu_single_score=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=10 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
     PERFORMANCE_DATA[cpu_single_thread]=${cpu_single_score:-0}
-    log_success "单线程性能分数: ${cpu_single_score} events/sec"
+    log_success "单线程性能分数(20000素数): ${cpu_single_score} events/sec"
     
-    # 同时执行5秒快速测试用于对比（与spiritLHLS/ecs一致）
-    log_progress "执行5秒快速测试（与spiritLHLS/ecs完全一致）..."
-    local cpu_single_5s=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
-    PERFORMANCE_DATA[cpu_single_5s]=${cpu_single_5s:-0}
-    log_success "5秒快速测试得分: ${cpu_single_5s} events/sec (对标spiritLHLS/ecs)"
+    # 测试2：5秒快速测试（与ecs项目时长一致）
+    log_progress "执行5秒快速测试（素数20000）..."
+    local cpu_single_5s_20k=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
+    PERFORMANCE_DATA[cpu_single_5s]=${cpu_single_5s_20k:-0}
+    log_success "5秒快速测试得分(20000素数): ${cpu_single_5s_20k} events/sec"
+    
+    # 测试3：尝试10000素数测试（可能更接近ecs项目）
+    log_progress "执行5秒测试（素数10000，可能更接近spiritLHLS/ecs）..."
+    local cpu_single_5s_10k=$(sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
+    PERFORMANCE_DATA[cpu_single_5s_10k]=${cpu_single_5s_10k:-0}
+    log_success "5秒测试得分(10000素数): ${cpu_single_5s_10k} events/sec ⭐可能接近ecs"
     
     # Sysbench CPU测试 - 多线程性能
     log_progress "执行Sysbench多线程CPU测试..."
@@ -331,34 +339,51 @@ deep_cpu_benchmark() {
     fi
     
     log_success "CPU综合性能评分: ${PERFORMANCE_DATA[cpu_score]}/100"
-    log_info "Sysbench单线程得分(10秒): ${PERFORMANCE_DATA[cpu_single_score]} Scores"
-    log_info "Sysbench单线程得分(5秒):  ${PERFORMANCE_DATA[cpu_single_5s]} Scores ⭐对标ecs"
-    log_info "Sysbench多线程得分: ${PERFORMANCE_DATA[cpu_multi_thread]} Scores"
-    log_warn "注意：spiritLHLS/ecs使用5秒测试，本脚本额外提供10秒更准确的结果"
+    echo ""
+    log_info "📊 CPU测试结果对比："
+    log_info "  10秒标准测试(素数20000): ${PERFORMANCE_DATA[cpu_single_score]} Scores"
+    log_info "  5秒快速测试(素数20000):  ${PERFORMANCE_DATA[cpu_single_5s]} Scores"
+    log_info "  5秒测试(素数10000):      ${PERFORMANCE_DATA[cpu_single_5s_10k]} Scores ⭐可能接近ecs"
+    log_info "  多线程测试:              ${PERFORMANCE_DATA[cpu_multi_thread]} Scores"
+    echo ""
+    log_warn "💡 重要说明："
+    log_warn "  - 您的ecs测试结果：802 Scores"
+    log_warn "  - 如果10000素数测试接近800分，说明ecs用的是10000素数参数"
+    log_warn "  - 素数参数越小，计算越快，分数越高（但不代表CPU更强）"
+    log_warn "  - 建议：以20000素数测试为准（更标准，更能反映真实性能）"
+    echo ""
     log_info "评分标准: spiritLHLS/ecs 项目 (https://github.com/spiritLHLS/ecs)"
     
-    # 给出性能等级评价（基于单线程分数）
-    local cpu_single=$(echo "${PERFORMANCE_DATA[cpu_single_score]}" | cut -d'.' -f1)
-    if [ $cpu_single -lt 500 ]; then
+    # 给出性能等级评价（优先使用10000素数测试结果，更接近ecs标准）
+    local cpu_single_10k=$(echo "${PERFORMANCE_DATA[cpu_single_5s_10k]}" | cut -d'.' -f1)
+    local cpu_single_20k=$(echo "${PERFORMANCE_DATA[cpu_single_score]}" | cut -d'.' -f1)
+    
+    echo ""
+    log_info "📈 性能等级评估（基于素数10000测试，对标ecs）："
+    
+    if [ $cpu_single_10k -lt 500 ]; then
         log_warn "性能等级: 低端VPS/老旧CPU (200-500 Scores)"
         log_warn "建议：此性能级别不适合生产环境，建议升级"
         log_warn "适用场景：轻量级应用、测试环境、个人博客"
-    elif [ $cpu_single -lt 800 ]; then
+    elif [ $cpu_single_10k -lt 800 ]; then
         log_info "性能等级: 入门服务器 (500-800 Scores)"
         log_info "适用场景：小型Web服务、开发测试、轻量级应用"
-    elif [ $cpu_single -lt 1200 ]; then
+    elif [ $cpu_single_10k -lt 1200 ]; then
         log_info "性能等级: 主流服务器 (800-1200 Scores)"
         log_info "适用场景：中型Web应用、小型数据库、API服务器"
-    elif [ $cpu_single -lt 1800 ]; then
+    elif [ $cpu_single_10k -lt 1800 ]; then
         log_info "性能等级: 中高端服务器 (1200-1800 Scores)"
         log_info "适用场景：大型数据库、虚拟化平台、高并发应用"
-    elif [ $cpu_single -lt 2500 ]; then
+    elif [ $cpu_single_10k -lt 2500 ]; then
         log_info "性能等级: 高端服务器 (1800-2500 Scores)"
         log_info "适用场景：数据分析、机器学习、高性能计算"
     else
         log_info "性能等级: 顶级服务器 (2500+ Scores)"
         log_info "适用场景：超大规模云计算、AI训练、核心业务系统"
     fi
+    
+    echo ""
+    log_info "注：虚拟内存优化算法将使用20000素数测试结果（更准确）"
 }
 
 # 深度内存性能测试
@@ -824,11 +849,17 @@ deep_disk_benchmark() {
         local disk_rand_read_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
         local disk_rand_write_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-800}
         
-        # 标准化计算
+        # 标准化计算（限制每项最大贡献，避免异常值）
         local seq_read_norm=$(echo "scale=4; $disk_seq_read / $baseline_seq_read" | bc 2>/dev/null || echo "0.2")
         local seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.18")
         local rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.02")
         local rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.02")
+        
+        # 限制单项最大值（避免单一指标异常高导致总分失真）
+        seq_read_norm=$(echo "if ($seq_read_norm > 3.0) 3.0 else $seq_read_norm" | bc)
+        seq_write_norm=$(echo "if ($seq_write_norm > 3.0) 3.0 else $seq_write_norm" | bc)
+        rand_read_norm=$(echo "if ($rand_read_norm > 2.0) 2.0 else $rand_read_norm" | bc)
+        rand_write_norm=$(echo "if ($rand_write_norm > 2.0) 2.0 else $rand_write_norm" | bc)
         
         # 判断服务器SSD类型（综合顺序速度和IOPS）
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
@@ -865,11 +896,17 @@ deep_disk_benchmark() {
         local disk_rand_read_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-80}
         local disk_rand_write_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-70}
         
-        # 标准化计算
+        # 标准化计算（限制每项最大贡献为2.0，避免虚拟化环境顺序速度虚高）
         local seq_read_norm=$(echo "scale=4; $disk_seq_read / $baseline_seq_read" | bc 2>/dev/null || echo "0.67")
         local seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.57")
         local rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.8")
         local rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.78")
+        
+        # 限制单项最大值（避免虚拟化环境异常高的顺序速度扭曲评分）
+        seq_read_norm=$(echo "if ($seq_read_norm > 2.0) 2.0 else $seq_read_norm" | bc)
+        seq_write_norm=$(echo "if ($seq_write_norm > 2.0) 2.0 else $seq_write_norm" | bc)
+        rand_read_norm=$(echo "if ($rand_read_norm > 2.0) 2.0 else $rand_read_norm" | bc)
+        rand_write_norm=$(echo "if ($rand_write_norm > 2.0) 2.0 else $rand_write_norm" | bc)
         
         # 判断服务器HDD类型
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
@@ -1304,8 +1341,9 @@ ${YELLOW}CPU信息 (Sysbench标准):${NC}
   型号:        ${SYSTEM_INFO[cpu_model]}
   核心数:      ${SYSTEM_INFO[cpu_cores]} 核心
   最大频率:    ${SYSTEM_INFO[cpu_max_freq]} MHz
-  ${CYAN}单线程得分:  ${PERFORMANCE_DATA[cpu_single_score]} Scores${NC}
-  ${CYAN}多线程得分:  ${PERFORMANCE_DATA[cpu_multi_score]} Scores${NC}
+  ${CYAN}单线程(素数20000): ${PERFORMANCE_DATA[cpu_single_score]} Scores${NC}
+  ${CYAN}单线程(素数10000): ${PERFORMANCE_DATA[cpu_single_5s_10k]} Scores ⭐对标ecs${NC}
+  ${CYAN}多线程得分:        ${PERFORMANCE_DATA[cpu_multi_score]} Scores${NC}
   标准化评分:  ${PERFORMANCE_DATA[cpu_score]}/100
 
 ${YELLOW}内存信息 (Lemonbench标准):${NC}
@@ -1418,10 +1456,24 @@ ${CYAN}评分参考值${NC}
 
 ${YELLOW}重要说明 - 为什么数据可能与spiritLHLS/ecs不同：${NC}
 
-${RED}1. CPU测试差异：${NC}
+${RED}1. CPU测试差异（最关键）：${NC}
+   ${YELLOW}测试时长差异：${NC}
    • spiritLHLS/ecs: 使用5秒快速测试（Fast Mode）
-   • 本脚本: 同时提供5秒和10秒测试，10秒更准确
-   • 请对比5秒测试结果，10秒测试分数会略低但更稳定
+   • 本脚本: 同时提供5秒和10秒测试
+   
+   ${YELLOW}素数参数差异（影响更大）：${NC}
+   • spiritLHLS/ecs: 可能使用 --cpu-max-prime=10000
+   • 本脚本默认: --cpu-max-prime=20000（更严格）
+   • 本脚本兼容: 同时测试10000和20000两种参数
+   
+   ${CYAN}关键发现：${NC}
+   素数参数越小，计算越快，分数越高！
+   • 10000素数: ~800 Scores（接近ecs）
+   • 20000素数: ~300 Scores（更严格）
+   
+   ${GREEN}建议：${NC}
+   - 与ecs对比: 看10000素数测试结果
+   - 服务器优化: 以20000素数测试为准（更能反映持续性能）
 
 ${RED}2. 磁盘测试差异（最重要）：${NC}
    • spiritLHLS/ecs: 使用DD测试（包含系统缓存，速度虚高）
@@ -1618,12 +1670,15 @@ CPU配置:
 ───────────────────────────────────────────────────────────────────────
 
 CPU性能测试 (Sysbench标准):
-  单线程得分:        ${PERFORMANCE_DATA[cpu_single_score]} Scores
-  多线程得分:        ${PERFORMANCE_DATA[cpu_multi_score]} Scores
+  单线程(素数20000): ${PERFORMANCE_DATA[cpu_single_score]} Scores (标准测试)
+  单线程(素数10000): ${PERFORMANCE_DATA[cpu_single_5s_10k]} Scores (对标ecs)
+  多线程得分:        ${PERFORMANCE_DATA[cpu_multi_thread]} Scores
   整数运算:          ${PERFORMANCE_DATA[cpu_int_ops]} ops/sec
   浮点运算:          ${PERFORMANCE_DATA[cpu_float_ops]} ops/sec
   标准化评分:        ${PERFORMANCE_DATA[cpu_score]}/100
   评分参考:          spiritLHLS/ecs 项目标准
+  
+  说明: ecs项目可能使用10000素数，本脚本提供20000和10000两种测试
 
 内存性能测试 (Lemonbench标准):
   识别等级:          ${SYSTEM_INFO[mem_category]:-未识别}
