@@ -278,7 +278,13 @@ deep_cpu_benchmark() {
     #   高端服务器:           1800-2500 Scores
     #   顶级服务器:           2500+ Scores
     
-    # 直接使用Sysbench单线程分数作为主要评分
+    # 确保变量有默认值（避免bc语法错误）
+    cpu_single_score=${cpu_single_score:-0}
+    cpu_multi_score=${PERFORMANCE_DATA[cpu_multi_thread]:-${cpu_single_score}}
+    int_ops=${int_ops:-0}
+    float_ops=${float_ops:-0}
+    
+    # 保存到全局变量
     PERFORMANCE_DATA[cpu_single_score]=$cpu_single_score
     PERFORMANCE_DATA[cpu_multi_score]=$cpu_multi_score
     
@@ -291,25 +297,34 @@ deep_cpu_benchmark() {
     
     # 标准化（以主流服务器为基准100分）
     # 单线程基准：1000 events/sec
-    local single_norm=$(echo "scale=4; ${cpu_single_score} / 1000" | bc)
+    local single_norm=$(echo "scale=4; ${cpu_single_score:-0} / 1000" | bc -l)
     
     # 多线程基准：核心数 * 800（考虑多核扩展性）
     local expected_multi=$((${SYSTEM_INFO[cpu_cores]} * 800))
-    local multi_norm=$(echo "scale=4; ${cpu_multi_score} / $expected_multi" | bc)
+    local multi_norm=$(echo "scale=4; ${cpu_multi_score:-0} / $expected_multi" | bc -l)
     
-    # 整数运算标准化（辅助参考）
-    local int_norm=$(echo "scale=4; ${int_ops} / 150000000" | bc)
+    # 整数运算标准化（辅助参考，基准1300 bogo ops/sec）
+    local int_norm=$(echo "scale=4; ${int_ops:-0} / 1300" | bc -l)
     
-    # 浮点运算标准化（辅助参考）
-    local float_norm=$(echo "scale=4; ${float_ops} / 120000000" | bc)
+    # 浮点运算标准化（辅助参考，基准1100 bogo ops/sec）
+    local float_norm=$(echo "scale=4; ${float_ops:-0} / 1100" | bc -l)
     
     # 计算0-100标准化分数
-    local normalized_score=$(echo "scale=2; ($single_norm * $single_weight + $multi_norm * $multi_weight + $int_norm * $int_weight + $float_norm * $float_weight) * 100" | bc)
+    local normalized_score=$(echo "scale=2; ($single_norm * $single_weight + $multi_norm * $multi_weight + $int_norm * $int_weight + $float_norm * $float_weight) * 100" | bc -l 2>/dev/null || echo "5.00")
     
-    # 限制范围
-    if (( $(echo "$normalized_score > 100" | bc -l) )); then
+    # 确保分数有效
+    if [ -z "$normalized_score" ] || [ "$normalized_score" = "0" ]; then
+        normalized_score=5.00
+    fi
+    
+    # 限制范围 0-100
+    local score_check=$(echo "$normalized_score > 100" | bc -l 2>/dev/null || echo "0")
+    if [ "$score_check" = "1" ]; then
         normalized_score=100.00
-    elif (( $(echo "$normalized_score < 1" | bc -l) )); then
+    fi
+    
+    local score_check_low=$(echo "$normalized_score < 1" | bc -l 2>/dev/null || echo "0")
+    if [ "$score_check_low" = "1" ]; then
         normalized_score=5.00
     fi
     
@@ -1632,130 +1647,6 @@ manage_swap_advanced() {
     swapon --show
 }
 
-# 生成详细报告文件
-generate_detailed_report() {
-    local report_file="/tmp/vm_optimization_report_$(date +%Y%m%d_%H%M%S).txt"
-    
-    cat > $report_file << EOF
-═══════════════════════════════════════════════════════════════════════
-                Linux虚拟内存专业级优化报告
-═══════════════════════════════════════════════════════════════════════
-生成时间: $(date '+%Y-%m-%d %H:%M:%S')
-
-───────────────────────────────────────────────────────────────────────
-一、系统硬件配置
-───────────────────────────────────────────────────────────────────────
-
-CPU配置:
-  型号:              ${SYSTEM_INFO[cpu_model]}
-  物理核心:          ${SYSTEM_INFO[cpu_cores]}
-  逻辑线程:          ${SYSTEM_INFO[cpu_threads]}
-  最大频率:          ${SYSTEM_INFO[cpu_max_freq]} MHz
-
-内存配置:
-  总容量:            ${SYSTEM_INFO[total_ram_mb]} MB ($(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB)
-  内存类型:          ${SYSTEM_INFO[mem_type]:-Unknown}
-  内存速度:          ${SYSTEM_INFO[mem_speed]:-Unknown} MT/s
-
-磁盘配置:
-  设备路径:          ${SYSTEM_INFO[disk_device]}
-  磁盘类型:          ${SYSTEM_INFO[disk_type]}
-  虚拟化环境:        ${SYSTEM_INFO[is_virtualized]:-未检测}
-  识别等级:          ${SYSTEM_INFO[disk_category]:-未识别}
-
-───────────────────────────────────────────────────────────────────────
-二、性能测试结果
-───────────────────────────────────────────────────────────────────────
-
-CPU性能测试 (Sysbench标准):
-  单线程测试: ${PERFORMANCE_DATA[cpu_single_thread]} Scores (对标ecs)
-  多线程得分: ${PERFORMANCE_DATA[cpu_multi_thread]} Scores
-  整数运算:   ${PERFORMANCE_DATA[cpu_int_ops]} ops/sec
-  浮点运算:   ${PERFORMANCE_DATA[cpu_float_ops]} ops/sec
-  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100
-  评分参考:   spiritLHLS/ecs 项目标准 (5秒, 素数10000)
-
-内存性能测试 (Lemonbench标准):
-  识别等级:          ${SYSTEM_INFO[mem_category]:-未识别}
-  单线程读取:        ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s
-  单线程写入:        ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s
-  标准化评分:        ${PERFORMANCE_DATA[mem_score]}/100
-  评分参考:          Lemonbench + spiritLHLS/ecs 项目标准
-
-磁盘性能测试 (FIO标准):
-  识别等级:          ${SYSTEM_INFO[disk_category]:-未识别}
-  顺序读取:          ${PERFORMANCE_DATA[disk_seq_read]} MB/s
-  顺序写入:          ${PERFORMANCE_DATA[disk_seq_write]} MB/s
-  4K随机读IOPS:      ${PERFORMANCE_DATA[disk_rand_read_iops]}
-  4K随机写IOPS:      ${PERFORMANCE_DATA[disk_rand_write_iops]}
-  混合读写IOPS:      ${PERFORMANCE_DATA[disk_mixed_iops]}
-  平均延迟:          ${PERFORMANCE_DATA[disk_latency]:-N/A} μs
-  标准化评分:        ${PERFORMANCE_DATA[disk_score]}/100
-  评分参考:          FIO + spiritLHLS/ecs 项目标准
-
-───────────────────────────────────────────────────────────────────────
-三、优化参数配置
-───────────────────────────────────────────────────────────────────────
-
-Swap配置:
-  推荐大小:          ${PERFORMANCE_DATA[optimal_swap]} MB ($(echo "scale=2; ${PERFORMANCE_DATA[optimal_swap]}/1024" | bc) GB)
-  Swappiness:        ${PERFORMANCE_DATA[optimal_swappiness]}
-
-缓存控制:
-  vfs_cache_pressure:        ${PERFORMANCE_DATA[vfs_cache_pressure]}
-  dirty_ratio:               ${PERFORMANCE_DATA[dirty_ratio]}%
-  dirty_background_ratio:    ${PERFORMANCE_DATA[dirty_background_ratio]}%
-  dirty_expire_centisecs:    ${PERFORMANCE_DATA[dirty_expire]}
-  dirty_writeback_centisecs: ${PERFORMANCE_DATA[dirty_writeback]}
-
-内存管理:
-  min_free_kbytes:   ${PERFORMANCE_DATA[min_free_kbytes]} KB
-  page_cluster:      ${PERFORMANCE_DATA[page_cluster]}
-  overcommit_memory: ${PERFORMANCE_DATA[overcommit_memory]}
-  overcommit_ratio:  ${PERFORMANCE_DATA[overcommit_ratio]}%
-
-───────────────────────────────────────────────────────────────────────
-四、监控命令
-───────────────────────────────────────────────────────────────────────
-
-查看内存使用:
-  free -h
-  cat /proc/meminfo
-  vmstat 1 10
-
-查看Swap使用:
-  swapon --show
-  cat /proc/swaps
-
-查看虚拟内存参数:
-  sysctl -a | grep vm
-
-实时监控:
-  htop
-  iostat -x 1
-  sar -r 1 10
-
-───────────────────────────────────────────────────────────────────────
-五、备份与恢复
-───────────────────────────────────────────────────────────────────────
-
-配置备份位置:
-  $(ls -t /etc/sysctl.conf.backup.* 2>/dev/null | head -1 || echo '无备份文件')
-
-恢复原配置:
-  sudo cp /etc/sysctl.conf.backup.XXXXXX /etc/sysctl.conf
-  sudo sysctl -p
-
-═══════════════════════════════════════════════════════════════════════
-报告结束
-═══════════════════════════════════════════════════════════════════════
-EOF
-    
-    log_success "详细报告已保存到: $report_file"
-    echo ""
-    echo "查看报告: cat $report_file"
-}
-
 # 主函数
 main() {
     clear
@@ -1801,7 +1692,6 @@ EOF
     if [ "$apply_choice" = "y" ] || [ "$apply_choice" = "Y" ]; then
         apply_optimizations
         manage_swap_advanced
-        generate_detailed_report
         
         echo ""
         log_success "═══════════════════════════════════════════════════"
@@ -1809,8 +1699,7 @@ EOF
         log_success "    建议重启系统以确保所有设置完全生效"
         log_success "═══════════════════════════════════════════════════"
     else
-        generate_detailed_report
-        log_info "未应用任何更改，但已生成详细报告供参考"
+        log_info "未应用任何更改"
     fi
     
     echo ""
