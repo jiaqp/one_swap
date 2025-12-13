@@ -1780,26 +1780,181 @@ calculate_optimal_swappiness_advanced() {
     log_success "推荐Swappiness: ${optimal_swappiness}"
 }
 
+# 读取当前系统的虚拟内存参数
+read_current_vm_parameters() {
+    log_progress "读取当前系统虚拟内存参数..."
+    
+    # 声明关联数组存储原始参数
+    declare -gA ORIGINAL_VM_PARAMS
+    
+    # 读取所有虚拟内存相关参数
+    ORIGINAL_VM_PARAMS[swappiness]=$(sysctl -n vm.swappiness 2>/dev/null || echo "60")
+    ORIGINAL_VM_PARAMS[vfs_cache_pressure]=$(sysctl -n vm.vfs_cache_pressure 2>/dev/null || echo "100")
+    ORIGINAL_VM_PARAMS[dirty_ratio]=$(sysctl -n vm.dirty_ratio 2>/dev/null || echo "20")
+    ORIGINAL_VM_PARAMS[dirty_background_ratio]=$(sysctl -n vm.dirty_background_ratio 2>/dev/null || echo "10")
+    ORIGINAL_VM_PARAMS[dirty_expire_centisecs]=$(sysctl -n vm.dirty_expire_centisecs 2>/dev/null || echo "3000")
+    ORIGINAL_VM_PARAMS[dirty_writeback_centisecs]=$(sysctl -n vm.dirty_writeback_centisecs 2>/dev/null || echo "500")
+    ORIGINAL_VM_PARAMS[min_free_kbytes]=$(sysctl -n vm.min_free_kbytes 2>/dev/null || echo "65536")
+    ORIGINAL_VM_PARAMS[page_cluster]=$(sysctl -n vm.page_cluster 2>/dev/null || echo "3")
+    ORIGINAL_VM_PARAMS[overcommit_memory]=$(sysctl -n vm.overcommit_memory 2>/dev/null || echo "0")
+    ORIGINAL_VM_PARAMS[overcommit_ratio]=$(sysctl -n vm.overcommit_ratio 2>/dev/null || echo "50")
+    
+    # 读取当前Swap大小
+    ORIGINAL_VM_PARAMS[current_swap]=$(free -m | awk '/^Swap:/{print $2}')
+    
+    log_success "当前系统参数读取完成"
+}
+
+# 对比原始参数和推荐参数，返回差异数量
+compare_vm_parameters() {
+    log_progress "对比原始参数与推荐参数..."
+    
+    local diff_count=0
+    declare -gA VM_PARAM_DIFF
+    
+    # 对比每个参数
+    if [ "${ORIGINAL_VM_PARAMS[swappiness]}" != "${PERFORMANCE_DATA[optimal_swappiness]}" ]; then
+        VM_PARAM_DIFF[swappiness]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[vfs_cache_pressure]}" != "${PERFORMANCE_DATA[vfs_cache_pressure]}" ]; then
+        VM_PARAM_DIFF[vfs_cache_pressure]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[dirty_ratio]}" != "${PERFORMANCE_DATA[dirty_ratio]}" ]; then
+        VM_PARAM_DIFF[dirty_ratio]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[dirty_background_ratio]}" != "${PERFORMANCE_DATA[dirty_background_ratio]}" ]; then
+        VM_PARAM_DIFF[dirty_background_ratio]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[dirty_expire_centisecs]}" != "${PERFORMANCE_DATA[dirty_expire]}" ]; then
+        VM_PARAM_DIFF[dirty_expire_centisecs]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[dirty_writeback_centisecs]}" != "${PERFORMANCE_DATA[dirty_writeback]}" ]; then
+        VM_PARAM_DIFF[dirty_writeback_centisecs]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[min_free_kbytes]}" != "${PERFORMANCE_DATA[min_free_kbytes]}" ]; then
+        VM_PARAM_DIFF[min_free_kbytes]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[page_cluster]}" != "${PERFORMANCE_DATA[page_cluster]}" ]; then
+        VM_PARAM_DIFF[page_cluster]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[overcommit_memory]}" != "${PERFORMANCE_DATA[overcommit_memory]}" ]; then
+        VM_PARAM_DIFF[overcommit_memory]="变更"
+        ((diff_count++))
+    fi
+    
+    if [ "${ORIGINAL_VM_PARAMS[overcommit_ratio]}" != "${PERFORMANCE_DATA[overcommit_ratio]}" ]; then
+        VM_PARAM_DIFF[overcommit_ratio]="变更"
+        ((diff_count++))
+    fi
+    
+    # Swap大小检查（差异超过20%才标记）
+    local current_swap=${ORIGINAL_VM_PARAMS[current_swap]:-0}
+    local optimal_swap=${PERFORMANCE_DATA[optimal_swap]:-0}
+    local swap_diff=$((optimal_swap - current_swap))
+    local swap_diff_abs=${swap_diff#-}
+    local swap_threshold=$((optimal_swap / 5))
+    
+    if [ $current_swap -eq 0 ] || [ $swap_diff_abs -gt $swap_threshold ]; then
+        VM_PARAM_DIFF[swap_size]="变更"
+        ((diff_count++))
+    fi
+    
+    log_success "参数对比完成，发现 ${diff_count} 项差异"
+    return $diff_count
+}
+
+# 显示参数对比表格
+show_parameter_comparison() {
+    echo ""
+    printf "${CYAN}╔═══════════════════════════════════════════════════════════════════╗${NC}\n"
+    printf "${CYAN}║               虚拟内存参数对比（原始 vs 推荐）                    ║${NC}\n"
+    printf "${CYAN}╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
+    echo ""
+    
+    printf "${YELLOW}%-30s %-15s %-15s %-10s${NC}\n" "参数名称" "原始值" "推荐值" "状态"
+    printf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    
+    # 核心Swap参数
+    show_param_row "vm.swappiness" "${ORIGINAL_VM_PARAMS[swappiness]}" "${PERFORMANCE_DATA[optimal_swappiness]}" "swappiness"
+    show_param_row "vm.vfs_cache_pressure" "${ORIGINAL_VM_PARAMS[vfs_cache_pressure]}" "${PERFORMANCE_DATA[vfs_cache_pressure]}" "vfs_cache_pressure"
+    
+    echo ""
+    printf "${YELLOW}脏页管理参数:${NC}\n"
+    show_param_row "vm.dirty_ratio" "${ORIGINAL_VM_PARAMS[dirty_ratio]}" "${PERFORMANCE_DATA[dirty_ratio]}" "dirty_ratio"
+    show_param_row "vm.dirty_background_ratio" "${ORIGINAL_VM_PARAMS[dirty_background_ratio]}" "${PERFORMANCE_DATA[dirty_background_ratio]}" "dirty_background_ratio"
+    show_param_row "vm.dirty_expire_centisecs" "${ORIGINAL_VM_PARAMS[dirty_expire_centisecs]}" "${PERFORMANCE_DATA[dirty_expire]}" "dirty_expire_centisecs"
+    show_param_row "vm.dirty_writeback_centisecs" "${ORIGINAL_VM_PARAMS[dirty_writeback_centisecs]}" "${PERFORMANCE_DATA[dirty_writeback]}" "dirty_writeback_centisecs"
+    
+    echo ""
+    printf "${YELLOW}内存管理参数:${NC}\n"
+    show_param_row "vm.min_free_kbytes" "${ORIGINAL_VM_PARAMS[min_free_kbytes]}" "${PERFORMANCE_DATA[min_free_kbytes]}" "min_free_kbytes"
+    show_param_row "vm.page_cluster" "${ORIGINAL_VM_PARAMS[page_cluster]}" "${PERFORMANCE_DATA[page_cluster]}" "page_cluster"
+    show_param_row "vm.overcommit_memory" "${ORIGINAL_VM_PARAMS[overcommit_memory]}" "${PERFORMANCE_DATA[overcommit_memory]}" "overcommit_memory"
+    show_param_row "vm.overcommit_ratio" "${ORIGINAL_VM_PARAMS[overcommit_ratio]}" "${PERFORMANCE_DATA[overcommit_ratio]}" "overcommit_ratio"
+    
+    echo ""
+    printf "${YELLOW}Swap空间:${NC}\n"
+    show_param_row "Swap大小 (MB)" "${ORIGINAL_VM_PARAMS[current_swap]}" "${PERFORMANCE_DATA[optimal_swap]}" "swap_size"
+    
+    echo ""
+    printf "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+}
+
+# 辅助函数：显示单个参数行
+show_param_row() {
+    local param_name=$1
+    local original=$2
+    local recommended=$3
+    local diff_key=$4
+    
+    local status
+    if [ "${VM_PARAM_DIFF[$diff_key]}" = "变更" ]; then
+        status="${RED}需要变更${NC}"
+    else
+        status="${GREEN}✓ 一致${NC}"
+    fi
+    
+    printf "%-30s %-15s %-15s " "$param_name" "$original" "$recommended"
+    echo -e "$status"
+}
+
 # 商业级算法：计算其他VM参数
 calculate_advanced_vm_parameters() {
     log_progress "计算高级虚拟内存参数..."
     
-    local disk_type=${SYSTEM_INFO[disk_type]}
-    local disk_score=${PERFORMANCE_DATA[disk_score]}
-    local ram_mb=${SYSTEM_INFO[total_ram_mb]}
-    local cpu_cores=${SYSTEM_INFO[cpu_cores]}
+    local disk_type=${SYSTEM_INFO[disk_type]:-HDD}
+    local disk_score=${PERFORMANCE_DATA[disk_score]:-20}
+    local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
+    local ram_gb=$(echo "scale=2; $ram_mb / 1024" | bc)  # 修复：添加ram_gb变量定义
+    local cpu_cores=${SYSTEM_INFO[cpu_cores]:-1}
     
     # 1. vm.vfs_cache_pressure
     # 控制内核回收用于缓存目录和inode对象的内存的倾向
     # Facebook生产环境优化算法
-    if [ "$disk_type" = "SSD" ] && (( $(echo "$disk_score > 60" | bc -l) )); then
+    if [ "$disk_type" = "SSD" ] && (( $(echo "${disk_score:-20} > 60" | bc -l) )); then
         # 高性能SSD：可以更积极回收缓存
         PERFORMANCE_DATA[vfs_cache_pressure]=150
     elif [ "$disk_type" = "SSD" ]; then
         PERFORMANCE_DATA[vfs_cache_pressure]=100
     else
         # HDD：保留更多缓存
-        if (( $(echo "$disk_score < 30" | bc -l) )); then
+        if (( $(echo "${disk_score:-20} < 30" | bc -l) )); then
             PERFORMANCE_DATA[vfs_cache_pressure]=50
         else
             PERFORMANCE_DATA[vfs_cache_pressure]=75
@@ -1810,24 +1965,24 @@ calculate_advanced_vm_parameters() {
     # 当脏页达到内存的这个百分比时，进程会被阻塞并强制写回
     # 关键原则：内存越小，dirty_ratio应该越低（避免占用过多内存）
     if [ "$disk_type" = "SSD" ]; then
-        if (( $(echo "$disk_score > 70" | bc -l) )); then
+        if (( $(echo "${disk_score:-20} > 70" | bc -l) )); then
             PERFORMANCE_DATA[dirty_ratio]=40  # 高性能SSD
         else
             PERFORMANCE_DATA[dirty_ratio]=30  # 普通SSD
         fi
     else
         # HDD根据性能分级和内存大小
-        if (( $(echo "$ram_gb < 1" | bc -l) )); then
+        if (( $(echo "${ram_gb:-1} < 1" | bc -l) )); then
             # 极小内存：dirty_ratio必须很低，避免脏页占用太多宝贵内存
             PERFORMANCE_DATA[dirty_ratio]=5
             log_info "极小内存系统：降低dirty_ratio到5%，避免脏页占用过多内存"
-        elif (( $(echo "$disk_score > 40" | bc -l) )); then
+        elif (( $(echo "${disk_score:-20} > 40" | bc -l) )); then
             PERFORMANCE_DATA[dirty_ratio]=20
-        elif (( $(echo "$disk_score > 20" | bc -l) )); then
+        elif (( $(echo "${disk_score:-20} > 20" | bc -l) )); then
             PERFORMANCE_DATA[dirty_ratio]=15
         else
             # 低性能HDD且低内存
-            if (( $(echo "$ram_gb < 2" | bc -l) )); then
+            if (( $(echo "${ram_gb:-1} < 2" | bc -l) )); then
                 PERFORMANCE_DATA[dirty_ratio]=8
             else
                 PERFORMANCE_DATA[dirty_ratio]=10
@@ -1847,7 +2002,7 @@ calculate_advanced_vm_parameters() {
     if [ "$disk_type" = "SSD" ]; then
         PERFORMANCE_DATA[dirty_expire]=1500  # 15秒
     else
-        if (( $(echo "$disk_score < 30" | bc -l) )); then
+        if (( $(echo "${disk_score:-20} < 30" | bc -l) )); then
             PERFORMANCE_DATA[dirty_expire]=3000  # 30秒，慢速HDD
         else
             PERFORMANCE_DATA[dirty_expire]=2000  # 20秒
@@ -1865,14 +2020,15 @@ calculate_advanced_vm_parameters() {
     # 6. vm.min_free_kbytes
     # 保持的最小空闲内存（用于紧急分配）
     # Red Hat Enterprise推荐：0.4% - 5% of total RAM
-    local min_free=$(echo "scale=0; ${SYSTEM_INFO[total_ram_kb]} * 0.005" | bc | cut -d'.' -f1)
+    local total_ram_kb=${SYSTEM_INFO[total_ram_kb]:-1048576}
+    local min_free=$(echo "scale=0; $total_ram_kb * 0.005" | bc | cut -d'.' -f1)
     
     # 根据CPU核心数调整（更多核心需要更多空闲内存）
-    min_free=$(echo "scale=0; $min_free * (1 + $cpu_cores * 0.05)" | bc | cut -d'.' -f1)
+    min_free=$(echo "scale=0; ${min_free:-52428} * (1 + ${cpu_cores:-1} * 0.05)" | bc | cut -d'.' -f1)
     
     # 限制范围：动态计算，避免占用过多内存
-    local min_limit=$(echo "scale=0; ${SYSTEM_INFO[total_ram_kb]} * 0.02" | bc | cut -d'.' -f1)  # 最低2%
-    local max_limit=$(echo "scale=0; ${SYSTEM_INFO[total_ram_kb]} * 0.10" | bc | cut -d'.' -f1)  # 最高10%
+    local min_limit=$(echo "scale=0; $total_ram_kb * 0.02" | bc | cut -d'.' -f1)  # 最低2%
+    local max_limit=$(echo "scale=0; $total_ram_kb * 0.10" | bc | cut -d'.' -f1)  # 最高10%
     
     # 绝对值限制：16MB - 1GB
     if [ $min_limit -lt 16384 ]; then
@@ -1906,7 +2062,7 @@ calculate_advanced_vm_parameters() {
     # 0: 启发式策略(默认)
     # 1: 总是允许超额分配
     # 2: 不允许超额分配超过swap+RAM*overcommit_ratio
-    if (( $(echo "${SYSTEM_INFO[total_ram_mb]} < 1024" | bc -l) )); then
+    if (( $(echo "${ram_mb:-1024} < 1024" | bc -l) )); then
         PERFORMANCE_DATA[overcommit_memory]=2  # 低内存系统，严格控制
         PERFORMANCE_DATA[overcommit_ratio]=50
     else
@@ -1916,7 +2072,7 @@ calculate_advanced_vm_parameters() {
     
     # 9. vm.zone_reclaim_mode
     # NUMA系统的区域回收模式
-    if [ $cpu_cores -gt 8 ]; then
+    if [ ${cpu_cores:-1} -gt 8 ]; then
         PERFORMANCE_DATA[zone_reclaim_mode]=0  # 禁用，允许跨NUMA访问
     else
         PERFORMANCE_DATA[zone_reclaim_mode]=0
@@ -2025,11 +2181,28 @@ show_professional_report() {
     fi
     
     echo ""
+    
+    # 显示参数对比表格
+    show_parameter_comparison
 }
 
 # 应用优化设置
 apply_optimizations() {
     log_header "应用优化配置"
+    
+    # 检查是否有需要变更的参数
+    local total_changes=0
+    for key in "${!VM_PARAM_DIFF[@]}"; do
+        ((total_changes++))
+    done
+    
+    if [ $total_changes -eq 0 ]; then
+        log_success "所有参数已是最优值，无需变更！"
+        return 0
+    fi
+    
+    log_warn "检测到 ${total_changes} 项参数需要优化"
+    echo ""
     
     # 备份现有配置
     local backup_file="/etc/sysctl.conf.backup.$(date +%Y%m%d_%H%M%S)"
@@ -2038,21 +2211,73 @@ apply_optimizations() {
         log_success "已备份配置到: $backup_file"
     fi
     
-    # 实时应用参数
-    log_progress "正在实时应用虚拟内存参数..."
+    # 实时应用有差异的参数
+    log_progress "正在智能应用需要变更的虚拟内存参数..."
     
-    sysctl -w vm.swappiness=${PERFORMANCE_DATA[optimal_swappiness]} >/dev/null 2>&1
-    sysctl -w vm.vfs_cache_pressure=${PERFORMANCE_DATA[vfs_cache_pressure]} >/dev/null 2>&1
-    sysctl -w vm.dirty_ratio=${PERFORMANCE_DATA[dirty_ratio]} >/dev/null 2>&1
-    sysctl -w vm.dirty_background_ratio=${PERFORMANCE_DATA[dirty_background_ratio]} >/dev/null 2>&1
-    sysctl -w vm.dirty_expire_centisecs=${PERFORMANCE_DATA[dirty_expire]} >/dev/null 2>&1
-    sysctl -w vm.dirty_writeback_centisecs=${PERFORMANCE_DATA[dirty_writeback]} >/dev/null 2>&1
-    sysctl -w vm.min_free_kbytes=${PERFORMANCE_DATA[min_free_kbytes]} >/dev/null 2>&1
-    sysctl -w vm.page_cluster=${PERFORMANCE_DATA[page_cluster]} >/dev/null 2>&1
-    sysctl -w vm.overcommit_memory=${PERFORMANCE_DATA[overcommit_memory]} >/dev/null 2>&1
-    sysctl -w vm.overcommit_ratio=${PERFORMANCE_DATA[overcommit_ratio]} >/dev/null 2>&1
+    local applied_count=0
     
-    log_success "实时参数已应用"
+    if [ "${VM_PARAM_DIFF[swappiness]}" = "变更" ]; then
+        sysctl -w vm.swappiness=${PERFORMANCE_DATA[optimal_swappiness]} >/dev/null 2>&1
+        log_info "  ✓ vm.swappiness: ${ORIGINAL_VM_PARAMS[swappiness]} → ${PERFORMANCE_DATA[optimal_swappiness]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[vfs_cache_pressure]}" = "变更" ]; then
+        sysctl -w vm.vfs_cache_pressure=${PERFORMANCE_DATA[vfs_cache_pressure]} >/dev/null 2>&1
+        log_info "  ✓ vm.vfs_cache_pressure: ${ORIGINAL_VM_PARAMS[vfs_cache_pressure]} → ${PERFORMANCE_DATA[vfs_cache_pressure]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[dirty_ratio]}" = "变更" ]; then
+        sysctl -w vm.dirty_ratio=${PERFORMANCE_DATA[dirty_ratio]} >/dev/null 2>&1
+        log_info "  ✓ vm.dirty_ratio: ${ORIGINAL_VM_PARAMS[dirty_ratio]} → ${PERFORMANCE_DATA[dirty_ratio]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[dirty_background_ratio]}" = "变更" ]; then
+        sysctl -w vm.dirty_background_ratio=${PERFORMANCE_DATA[dirty_background_ratio]} >/dev/null 2>&1
+        log_info "  ✓ vm.dirty_background_ratio: ${ORIGINAL_VM_PARAMS[dirty_background_ratio]} → ${PERFORMANCE_DATA[dirty_background_ratio]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[dirty_expire_centisecs]}" = "变更" ]; then
+        sysctl -w vm.dirty_expire_centisecs=${PERFORMANCE_DATA[dirty_expire]} >/dev/null 2>&1
+        log_info "  ✓ vm.dirty_expire_centisecs: ${ORIGINAL_VM_PARAMS[dirty_expire_centisecs]} → ${PERFORMANCE_DATA[dirty_expire]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[dirty_writeback_centisecs]}" = "变更" ]; then
+        sysctl -w vm.dirty_writeback_centisecs=${PERFORMANCE_DATA[dirty_writeback]} >/dev/null 2>&1
+        log_info "  ✓ vm.dirty_writeback_centisecs: ${ORIGINAL_VM_PARAMS[dirty_writeback_centisecs]} → ${PERFORMANCE_DATA[dirty_writeback]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[min_free_kbytes]}" = "变更" ]; then
+        sysctl -w vm.min_free_kbytes=${PERFORMANCE_DATA[min_free_kbytes]} >/dev/null 2>&1
+        log_info "  ✓ vm.min_free_kbytes: ${ORIGINAL_VM_PARAMS[min_free_kbytes]} → ${PERFORMANCE_DATA[min_free_kbytes]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[page_cluster]}" = "变更" ]; then
+        sysctl -w vm.page_cluster=${PERFORMANCE_DATA[page_cluster]} >/dev/null 2>&1
+        log_info "  ✓ vm.page_cluster: ${ORIGINAL_VM_PARAMS[page_cluster]} → ${PERFORMANCE_DATA[page_cluster]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[overcommit_memory]}" = "变更" ]; then
+        sysctl -w vm.overcommit_memory=${PERFORMANCE_DATA[overcommit_memory]} >/dev/null 2>&1
+        log_info "  ✓ vm.overcommit_memory: ${ORIGINAL_VM_PARAMS[overcommit_memory]} → ${PERFORMANCE_DATA[overcommit_memory]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[overcommit_ratio]}" = "变更" ]; then
+        sysctl -w vm.overcommit_ratio=${PERFORMANCE_DATA[overcommit_ratio]} >/dev/null 2>&1
+        log_info "  ✓ vm.overcommit_ratio: ${ORIGINAL_VM_PARAMS[overcommit_ratio]} → ${PERFORMANCE_DATA[overcommit_ratio]}"
+        ((applied_count++))
+    fi
+    
+    echo ""
+    log_success "已实时应用 ${applied_count} 项参数变更"
     
     # 写入配置文件永久生效
     log_progress "写入/etc/sysctl.conf使配置永久生效..."
@@ -2095,7 +2320,10 @@ EOF
 }
 
 # 管理Swap分区/文件
+# 参数 $1: auto_apply (可选) - 如果为"auto"则自动应用，不询问用户
 manage_swap_advanced() {
+    local auto_apply=${1:-""}
+    
     log_header "Swap空间管理"
     
     local current_swap=$(free -m | awk '/^Swap:/{print $2}')
@@ -2109,20 +2337,33 @@ manage_swap_advanced() {
     local diff_abs=${diff#-}
     local threshold=$((optimal_swap / 5))  # 20%阈值
     
+    local need_adjustment=0
+    
     if [ $current_swap -eq 0 ]; then
         log_warn "系统当前没有Swap，强烈建议创建"
-        read -p "是否创建Swap? (y/n): " create_swap
+        need_adjustment=1
     elif [ $diff_abs -gt $threshold ]; then
         log_warn "当前Swap与推荐值差异超过20%"
-        read -p "是否重新调整Swap大小? (y/n): " create_swap
+        need_adjustment=1
     else
         log_success "当前Swap大小合理，无需调整"
         return 0
     fi
     
-    if [ "$create_swap" != "y" ] && [ "$create_swap" != "Y" ]; then
-        log_info "跳过Swap调整"
-        return 0
+    # 如果是自动应用模式，直接执行
+    if [ "$auto_apply" = "auto" ]; then
+        log_info "自动应用Swap调整..."
+        local create_swap="y"
+    else
+        # 否则询问用户
+        if [ $need_adjustment -eq 1 ]; then
+            read -p "是否调整Swap大小? (y/n): " create_swap
+            
+            if [ "$create_swap" != "y" ] && [ "$create_swap" != "Y" ]; then
+                log_info "跳过Swap调整"
+                return 0
+            fi
+        fi
     fi
     
     # 关闭现有swap
@@ -2195,24 +2436,50 @@ EOF
     calculate_optimal_swappiness_advanced
     calculate_advanced_vm_parameters
     
+    # 读取当前系统参数并对比
+    read_current_vm_parameters
+    compare_vm_parameters
+    
     # 显示报告
     show_professional_report
     
+    # 统计需要变更的参数数量
+    local change_count=0
+    for key in "${!VM_PARAM_DIFF[@]}"; do
+        ((change_count++))
+    done
+    
     # 询问是否应用
     echo ""
-    read -p "是否应用以上优化配置? (y/n): " apply_choice
-    
-    if [ "$apply_choice" = "y" ] || [ "$apply_choice" = "Y" ]; then
-        apply_optimizations
-        manage_swap_advanced
-        
-        echo ""
-        log_success "═══════════════════════════════════════════════════"
-        log_success "    优化完成！"
-        log_success "    建议重启系统以确保所有设置完全生效"
-        log_success "═══════════════════════════════════════════════════"
+    if [ $change_count -eq 0 ]; then
+        printf "${GREEN}✅ 恭喜！您的系统虚拟内存参数已经是最优配置！${NC}\n"
+        log_info "无需进行任何变更"
     else
-        log_info "未应用任何更改"
+        printf "${YELLOW}检测到 ${change_count} 项参数需要优化${NC}\n"
+        echo ""
+        read -p "是否应用以上优化配置? (y/n): " apply_choice
+        
+        if [ "$apply_choice" = "y" ] || [ "$apply_choice" = "Y" ]; then
+            apply_optimizations
+            
+            # 处理Swap变更（自动应用模式）
+            if [ "${VM_PARAM_DIFF[swap_size]}" = "变更" ]; then
+                echo ""
+                manage_swap_advanced "auto"
+            else
+                echo ""
+                log_success "Swap大小已是最优值，无需调整"
+            fi
+            
+            echo ""
+            log_success "═══════════════════════════════════════════════════"
+            log_success "    ✅ 优化完成！"
+            log_success "    📊 已应用 ${change_count} 项参数变更"
+            log_success "    🔄 建议重启系统以确保所有设置完全生效"
+            log_success "═══════════════════════════════════════════════════"
+        else
+            log_info "未应用任何更改，但已生成详细报告供参考"
+        fi
     fi
     
     echo ""
