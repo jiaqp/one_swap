@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-3.0-blue.svg)
+![Version](https://img.shields.io/badge/version-3.1-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey.svg)
 
@@ -208,13 +208,21 @@ CPU:
 
 ---
 
-## 🛡️ 安全特性
+## 🛡️ 安全特性（v3.1 增强）
 
 - ✅ **自动备份**：修改前自动备份 `/etc/sysctl.conf`
 - ✅ **磁盘空间检测**：空间不足时跳过备份但仍应用配置
 - ✅ **参数验证**：所有参数都有合理范围限制
-- ✅ **渐进式应用**：先实时应用，验证无误后写入配置文件
+- ✅ **分阶段应用**：先应用安全参数 → 创建swap → 再应用overcommit
+- ✅ **安全检查**：应用前检查可用内存、磁盘空间、系统状态
+- ✅ **自动回滚**：检测到内存分配失败时自动恢复安全设置
+- ✅ **永不使用overcommit_memory=2**：避免严格限制导致无法分配内存
+- ✅ **小内存保护**：极小内存系统不降低min_free_kbytes
 - ✅ **可回滚**：保留原配置备份，可随时恢复
+
+### 🆘 紧急情况处理
+
+如果遇到 "Cannot allocate memory" 错误，请查看 [紧急恢复指南](./EMERGENCY_RECOVERY.md)
 
 ---
 
@@ -280,6 +288,19 @@ swappiness = base_swappiness + disk_adjustment
 3. **磁盘IO**：测试期间会产生磁盘IO负载
 4. **自动应用**：脚本会自动应用优化，3秒倒计时
 5. **重启建议**：优化后建议重启系统以确保所有设置完全生效
+
+## 🔧 版本历史
+
+### v3.1 (2024-12-13) - 安全性增强
+- 🛡️ **修复关键bug**：永不使用 `overcommit_memory=2`，避免内存分配失败
+- 🔄 **优化应用顺序**：分阶段应用参数（安全参数 → 创建swap → overcommit）
+- 🛡️ **小内存保护**：极小内存系统(<512MB)不降低 `min_free_kbytes`
+- ✅ **安全检查机制**：应用前检查内存、磁盘、系统状态
+- 🔙 **自动回滚**：检测到问题时自动恢复安全设置
+- 📚 **紧急恢复指南**：提供详细的故障恢复步骤
+
+### v3.0 (2024-12-10)
+- 初始发布，业界标准测试+商业级算法
 
 ---
 
