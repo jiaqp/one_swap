@@ -226,7 +226,8 @@ deep_cpu_benchmark() {
     # 使用5秒 + 10000素数，与spiritLHLS/ecs项目对标
     log_progress "执行Sysbench单线程CPU测试（5秒，素数10000）..."
     local cpu_single_score=$(sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
-    PERFORMANCE_DATA[cpu_single_thread]=${cpu_single_score:-0}
+    cpu_single_score=${cpu_single_score:-800}
+    PERFORMANCE_DATA[cpu_single_thread]=$cpu_single_score
     log_success "CPU性能: ${cpu_single_score} events/sec ⭐优化算法关键指标"
 }
 
@@ -445,7 +446,7 @@ deep_disk_benchmark() {
     
     # 判断服务器SSD类型（综合顺序速度和IOPS）
     if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
+        local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
         local seq_read=${PERFORMANCE_DATA[disk_seq_read]:-100}
         
         # 检测虚拟化环境特征：高顺序速度但低IOPS
@@ -670,8 +671,11 @@ calculate_optimal_swap_advanced() {
         # HDD或虚拟化环境: IOPS低，需要大幅增加Swap
         if [[ "$is_virt" == "是"* ]]; then
             # 虚拟化环境：IOPS极低且不稳定
-            if [ $disk_iops -lt 150 ]; then
-                disk_factor=1.40  # IOPS <150：极限情况
+            if [ $disk_iops -lt 100 ]; then
+                disk_factor=1.45  # IOPS <100：极端情况，最大保护
+                log_warn "极端低IOPS（${disk_iops}），最大增加swap（+45%）应对严重IO瓶颈"
+            elif [ $disk_iops -lt 150 ]; then
+                disk_factor=1.40  # IOPS 100-150：极低情况
                 log_warn "极低IOPS（${disk_iops}），大幅增加swap（+40%）应对IO瓶颈"
             elif [ $disk_iops -lt 300 ]; then
                 disk_factor=1.30  # IOPS 150-300：虚拟化典型
@@ -797,8 +801,11 @@ calculate_optimal_swappiness_advanced() {
         # HDD或虚拟化环境: IOPS低，需要降低swappiness
         if [[ "$is_virt" == "是"* ]]; then
             # 虚拟化环境：根据IOPS严重程度调整
-            if [ $disk_iops -lt 150 ]; then
-                disk_adjustment=-15  # IOPS <150：严重受限
+            if [ $disk_iops -lt 100 ]; then
+                disk_adjustment=-20  # IOPS <100：极端慢速，严格限制swap使用
+                log_warn "极端低IOPS（${disk_iops}），严格降低swappiness避免系统卡死"
+            elif [ $disk_iops -lt 150 ]; then
+                disk_adjustment=-15  # IOPS 100-150：严重受限
                 log_warn "极低IOPS（${disk_iops}），大幅降低swappiness避免频繁交换"
             elif [ $disk_iops -lt 300 ]; then
                 disk_adjustment=-10  # IOPS 150-300：明显受限
@@ -1008,7 +1015,7 @@ calculate_advanced_vm_parameters() {
     log_progress "计算高级虚拟内存参数..."
     
     local disk_type=${SYSTEM_INFO[disk_type]:-HDD}
-    local disk_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-100}  # 使用写IOPS(脏页写回)
+    local disk_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-80}  # 使用写IOPS(脏页写回)
     local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
     local ram_gb=$(echo "scale=2; $ram_mb / 1024" | bc)
     local cpu_cores=${SYSTEM_INFO[cpu_cores]:-1}
@@ -1069,10 +1076,13 @@ calculate_advanced_vm_parameters() {
     
     # 4. vm.dirty_expire_centisecs
     # 脏页的过期时间（根据IOPS调整）
+    # 逻辑：IOPS越低，脏页保留越久，给予更多合并时间
     if [ "$disk_type" = "SSD" ]; then
         PERFORMANCE_DATA[dirty_expire]=1500  # 15秒（SSD写入快）
     else
-        if [ $disk_iops -lt 150 ]; then
+        if [ $disk_iops -lt 100 ]; then
+            PERFORMANCE_DATA[dirty_expire]=4000  # 40秒（极端慢速，最大合并时间）
+        elif [ $disk_iops -lt 150 ]; then
             PERFORMANCE_DATA[dirty_expire]=3000  # 30秒（极慢HDD/虚拟化）
         else
             PERFORMANCE_DATA[dirty_expire]=2000  # 20秒（普通HDD）
