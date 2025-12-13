@@ -1240,12 +1240,13 @@ deep_disk_benchmark() {
     #   PCIe 4.0 NVMe:         18,000-35,000分 (顺序: 4000-7000 MB/s, 4K IOPS: 400k-1000k)
     #   PCIe 5.0 NVMe:         35,000+分    (顺序: 10000+ MB/s,  4K IOPS: 1000k+)
     
-    # 权重分配（服务器工作负载：IOPS > 顺序带宽）
-    # 服务器应用（数据库、Web服务器等）主要是随机小IO
-    local seq_read_weight=0.15
-    local seq_write_weight=0.15
-    local rand_read_weight=0.40   # 服务器最重要：随机读IOPS
-    local rand_write_weight=0.30  # 服务器次重要：随机写IOPS
+    # 权重分配（虚拟内存优化专用：IOPS绝对主导）
+    # 原因：Swap页面交换完全依赖4K随机IOPS性能
+    # 优化：进一步提高IOPS权重，降低顺序带宽权重
+    local seq_read_weight=0.10    # 顺序读：次要（大文件加载）
+    local seq_write_weight=0.10   # 顺序写：次要（大文件保存）
+    local rand_read_weight=0.50   # 4K随机读：核心！Swap换入性能
+    local rand_write_weight=0.30  # 4K随机写：重要！脏页写回性能
     
     # 声明标准化变量（在分支外）
     local seq_read_norm=0
@@ -1638,51 +1639,86 @@ calculate_optimal_swap_advanced() {
         base_swap=16384  # 16GB
     fi
     
-    # CPU性能调整系数（服务器版：更保守，范围0.90-1.10）
-    # 服务器环境倾向于保留更多swap以应对突发情况
-    local cpu_factor=$(echo "scale=4; 1.10 - ($cpu_score / 100) * 0.2" | bc)
+    # ==========================================
+    # 优化后的系数计算（契合虚拟内存优化本质）
+    # ==========================================
     
-    # 内存性能调整系数（服务器版：更保守，范围0.95-1.05）
-    # ECC内存更可靠，但服务器仍需保持足够swap
-    local mem_factor=$(echo "scale=4; 1.05 - ($mem_score / 100) * 0.1" | bc)
+    # CPU性能调整系数（降低权重：范围0.97-1.03）
+    # 原因：CPU性能对Swap效率影响较小（主要影响上下文切换，差异<10%）
+    # 重要性：低（约占总影响的10%）
+    local cpu_factor=$(echo "scale=4; 1.03 - ($cpu_score / 100) * 0.06" | bc)
     
-    # 磁盘性能调整系数（服务器版：0.85-1.15）
-    # 特别考虑虚拟化环境的影响
+    # 内存容量压力系数（新增！范围0.80-1.20）
+    # 原因：内存大小是决定Swap策略的关键因素
+    # 重要性：高（约占总影响的30%）
+    local ram_pressure_factor
+    if (( $(echo "$ram_gb < 0.5" | bc -l) )); then
+        ram_pressure_factor=1.20  # 极小内存：大幅增加Swap
+    elif (( $(echo "$ram_gb < 1" | bc -l) )); then
+        ram_pressure_factor=1.15  # <1GB：显著增加
+    elif (( $(echo "$ram_gb < 2" | bc -l) )); then
+        ram_pressure_factor=1.10  # <2GB：适度增加
+    elif (( $(echo "$ram_gb < 4" | bc -l) )); then
+        ram_pressure_factor=1.05  # <4GB：略微增加
+    elif (( $(echo "$ram_gb < 8" | bc -l) )); then
+        ram_pressure_factor=1.00  # 4-8GB：标准
+    elif (( $(echo "$ram_gb < 16" | bc -l) )); then
+        ram_pressure_factor=0.95  # 8-16GB：略微减少
+    elif (( $(echo "$ram_gb < 32" | bc -l) )); then
+        ram_pressure_factor=0.90  # 16-32GB：适度减少
+    else
+        ram_pressure_factor=0.80  # >32GB：显著减少
+    fi
+    
+    # 内存速度调整系数（降低权重：范围0.98-1.02）
+    # 原因：内存速度对Swap效率影响极小（现代内存速度差异<2倍，但性能已足够快）
+    # 重要性：极低（约占总影响的5%）
+    local mem_speed_factor=$(echo "scale=4; 1.02 - ($mem_score / 100) * 0.04" | bc)
+    
+    # 磁盘性能调整系数（最高权重：范围0.70-1.40）
+    # 原因：磁盘IOPS直接决定Swap可用性（差异可达1000倍）
+    # 重要性：最高（约占总影响的60%）
     local disk_factor
     local is_virt=${SYSTEM_INFO[is_virtualized]:-"否"}
     
     if [ "$disk_type" = "SSD" ]; then
-        # 企业级SSD: 耐久度高，可以承受更多写入
+        # 企业级SSD: 高IOPS，可以大幅减少Swap，延长寿命
         if (( $(echo "$disk_score > 70" | bc -l) )); then
-            disk_factor=0.95  # 高性能企业级SSD
-        elif (( $(echo "$disk_score > 40" | bc -l) )); then
-            disk_factor=0.90  # 中等企业级SSD
+            disk_factor=0.70  # 顶级NVMe：IOPS >100k，可以显著减少Swap
+        elif (( $(echo "$disk_score > 50" | bc -l) )); then
+            disk_factor=0.80  # 高端SSD：IOPS 50k-100k
+        elif (( $(echo "$disk_score > 30" | bc -l) )); then
+            disk_factor=0.90  # 中端SSD：IOPS 10k-50k
         else
-            disk_factor=0.85  # 入门级SSD（服务器不应降太多）
+            disk_factor=1.00  # 入门SSD：IOPS <10k，标准策略
         fi
     else
-        # 企业级HDD或虚拟化环境: 性能较低，需要更多swap
-        # 修复：使用通配符匹配，支持"是（xxx）"格式
+        # HDD或虚拟化环境: IOPS低，需要大幅增加Swap缓冲
         if [[ "$is_virt" == "是"* ]]; then
-            # 虚拟化环境特殊处理：IOPS低，需要更多swap缓冲
-            disk_factor=1.20  # 虚拟化环境增加swap
-            log_warn "检测到虚拟化环境，IOPS受限，增加swap大小以应对IO性能波动"
-        elif (( $(echo "$disk_score > 50" | bc -l) )); then
-            disk_factor=1.05   # 高性能SAS HDD
+            # 虚拟化环境：IOPS极不稳定且低
+            if (( $(echo "$disk_score < 5" | bc -l) )); then
+                disk_factor=1.40  # IOPS <200：极限情况
+                log_warn "极低IOPS虚拟化环境，大幅增加swap（+40%）应对IO瓶颈"
+            else
+                disk_factor=1.30  # IOPS 200-500：虚拟化典型情况
+                log_warn "检测到虚拟化环境，IOPS受限，增加swap大小（+30%）以应对IO性能波动"
+            fi
         elif (( $(echo "$disk_score > 25" | bc -l) )); then
-            disk_factor=1.10   # 标准企业级HDD
+            disk_factor=1.10   # 10K RPM SAS：IOPS 200-400
+        elif (( $(echo "$disk_score > 15" | bc -l) )); then
+            disk_factor=1.20   # 7200 RPM：IOPS 100-200
         else
-            disk_factor=1.15   # 低性能HDD（不建议生产使用）
+            disk_factor=1.30   # 5400 RPM或更差：IOPS <100
         fi
     fi
     
-    log_info "服务器稳定性考虑：采用保守策略，确保足够swap空间"
+    log_info "优化算法权重分配：磁盘60% > 内存容量30% > CPU+内存速度10%"
     if [[ "$is_virt" == "是"* ]]; then
         log_info "虚拟化环境调整：考虑到IOPS限制，适当增加swap以提高稳定性"
     fi
     
-    # 综合计算最优swap
-    local optimal_swap=$(echo "scale=0; $base_swap * $cpu_factor * $mem_factor * $disk_factor" | bc | cut -d'.' -f1)
+    # 综合计算最优swap（使用优化后的多因子模型）
+    local optimal_swap=$(echo "scale=0; $base_swap * $cpu_factor * $ram_pressure_factor * $mem_speed_factor * $disk_factor" | bc | cut -d'.' -f1)
     
     # 确保swap在合理范围内
     # 最小值：256MB或RAM的10%（取较大值）
@@ -1706,7 +1742,13 @@ calculate_optimal_swap_advanced() {
     PERFORMANCE_DATA[optimal_swap]=$optimal_swap
     
     log_success "推荐Swap大小: ${optimal_swap} MB ($(echo "scale=2; $optimal_swap/1024" | bc) GB)"
-    log_info "  算法调整系数: CPU=${cpu_factor}, MEM=${mem_factor}, DISK=${disk_factor}"
+    echo ""
+    log_info "📊 多因子加权模型计算详情："
+    log_info "  └─ CPU性能系数: ${cpu_factor} (权重10%, 范围0.97-1.03)"
+    log_info "  └─ 内存容量压力: ${ram_pressure_factor} (权重30%, 范围0.80-1.20)"
+    log_info "  └─ 内存速度系数: ${mem_speed_factor} (权重5%, 范围0.98-1.02)"
+    log_info "  └─ 磁盘IOPS系数: ${disk_factor} (权重60%, 范围0.70-1.40)"
+    log_info "  └─ 综合系数: $(echo "scale=4; $cpu_factor * $ram_pressure_factor * $mem_speed_factor * $disk_factor" | bc)"
 }
 
 # 商业级算法：计算最优swappiness
@@ -2414,13 +2456,22 @@ manage_swap_advanced() {
     # 动态阈值：<2GB内存用10%，>=2GB用20%（与compare_vm_parameters一致）
     local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
     local threshold
+    
+    # 确保变量是整数
+    ram_mb=$(echo "$ram_mb" | grep -oE '[0-9]+')
+    optimal_swap=$(echo "$optimal_swap" | grep -oE '[0-9]+')
+    current_swap=$(echo "$current_swap" | grep -oE '[0-9]+')
+    diff_abs=$(echo "$diff_abs" | grep -oE '[0-9]+')
+    
     if [ $ram_mb -lt 2048 ]; then
         threshold=$((optimal_swap / 10))  # 小内存：10%阈值
-        log_info "小内存系统，使用10%精确阈值（${threshold}MB）"
+        log_info "小内存系统（${ram_mb}MB），使用10%精确阈值（${threshold}MB）"
     else
         threshold=$((optimal_swap / 5))   # 大内存：20%阈值
         log_info "使用20%阈值（${threshold}MB）"
     fi
+    
+    log_info "Swap差异计算：|${optimal_swap} - ${current_swap}| = ${diff_abs}MB, 阈值=${threshold}MB"
     
     local need_adjustment=0
     
@@ -2428,10 +2479,11 @@ manage_swap_advanced() {
         log_warn "系统当前没有Swap，强烈建议创建"
         need_adjustment=1
     elif [ $diff_abs -gt $threshold ]; then
-        log_warn "当前Swap与推荐值差异超过阈值（差${diff_abs}MB > ${threshold}MB）"
+        log_warn "⚠️ 当前Swap与推荐值差异超过阈值（${diff_abs}MB > ${threshold}MB）"
+        log_info "需要调整：${current_swap}MB → ${optimal_swap}MB"
         need_adjustment=1
     else
-        log_success "当前Swap大小合理，无需调整（差异${diff_abs}MB ≤ 阈值${threshold}MB）"
+        log_success "✅ 当前Swap大小合理，无需调整（差异${diff_abs}MB ≤ 阈值${threshold}MB）"
         return 0
     fi
     
@@ -2590,12 +2642,12 @@ EOF
         log_success "💾 配置已永久保存到 /etc/sysctl.conf"
         
         # 根据实际备份情况显示不同消息
-        if [ "${BACKUP_SUCCESS:-0}" -eq 1 ]; then
+        if [ "${BACKUP_SUCCESS:-0}" -eq 1 ] && [ -n "${BACKUP_FILE}" ]; then
             log_success "📁 原配置已备份到: ${BACKUP_FILE}"
-        else
+        elif [ "${BACKUP_SUCCESS:-0}" -eq 0 ]; then
             log_warn "⚠️  磁盘空间不足，未备份原配置"
             log_info "💡 建议清理空间后运行以下命令手动备份："
-            echo "   sudo cp /etc/sysctl.conf /etc/sysctl.conf.backup"
+            echo "   sudo cp /etc/sysctl.conf /etc/sysctl.conf.backup.\$(date +%Y%m%d)"
         fi
         
         echo ""
