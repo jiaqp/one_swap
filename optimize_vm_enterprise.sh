@@ -835,6 +835,12 @@ deep_disk_benchmark() {
     local rand_read_weight=0.40   # 服务器最重要：随机读IOPS
     local rand_write_weight=0.30  # 服务器次重要：随机写IOPS
     
+    # 声明标准化变量（在分支外）
+    local seq_read_norm=0
+    local seq_write_norm=0
+    local rand_read_norm=0
+    local rand_write_norm=0
+    
     if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
         # 服务器SSD评分基准（以企业级SATA SSD为参考）
         # 企业级SSD通常优化IOPS和延迟，而非顺序速度
@@ -854,12 +860,6 @@ deep_disk_benchmark() {
         local seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.18")
         local rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.02")
         local rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.02")
-        
-        # 限制单项最大值（避免单一指标异常高导致总分失真）
-        seq_read_norm=$(echo "if ($seq_read_norm > 3.0) 3.0 else $seq_read_norm" | bc)
-        seq_write_norm=$(echo "if ($seq_write_norm > 3.0) 3.0 else $seq_write_norm" | bc)
-        rand_read_norm=$(echo "if ($rand_read_norm > 2.0) 2.0 else $rand_read_norm" | bc)
-        rand_write_norm=$(echo "if ($rand_write_norm > 2.0) 2.0 else $rand_write_norm" | bc)
         
         # 判断服务器SSD类型（综合顺序速度和IOPS）
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
@@ -896,39 +896,129 @@ deep_disk_benchmark() {
         local disk_rand_read_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-80}
         local disk_rand_write_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-70}
         
-        # 标准化计算（限制每项最大贡献为2.0，避免虚拟化环境顺序速度虚高）
-        local seq_read_norm=$(echo "scale=4; $disk_seq_read / $baseline_seq_read" | bc 2>/dev/null || echo "0.67")
-        local seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.57")
-        local rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.8")
-        local rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.78")
+        # 标准化计算
+        seq_read_norm=$(echo "scale=4; $disk_seq_read / $baseline_seq_read" | bc 2>/dev/null || echo "0.67")
+        seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.57")
+        rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.8")
+        rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.78")
         
-        # 限制单项最大值（避免虚拟化环境异常高的顺序速度扭曲评分）
-        seq_read_norm=$(echo "if ($seq_read_norm > 2.0) 2.0 else $seq_read_norm" | bc)
-        seq_write_norm=$(echo "if ($seq_write_norm > 2.0) 2.0 else $seq_write_norm" | bc)
-        rand_read_norm=$(echo "if ($rand_read_norm > 2.0) 2.0 else $rand_read_norm" | bc)
-        rand_write_norm=$(echo "if ($rand_write_norm > 2.0) 2.0 else $rand_write_norm" | bc)
-        
-        # 判断服务器HDD类型
+        # 判断服务器HDD类型（优先基于IOPS，而非顺序速度）
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
-        if (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 200" | bc -l) )) && (( $(echo "$disk_rand_read > 180" | bc -l) )); then
+        local disk_seq=${PERFORMANCE_DATA[disk_seq_read]:-100}
+        
+        # 判断HDD类型（基于IOPS优先）
+        if (( $(echo "$disk_seq > 200" | bc -l) )) && (( $(echo "$disk_rand_read > 180" | bc -l) )); then
             SYSTEM_INFO[disk_category]="10000/15000 RPM SAS 企业级HDD"
-        elif (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 150" | bc -l) )); then
+        elif (( $(echo "$disk_rand_read > 120" | bc -l) )); then
             SYSTEM_INFO[disk_category]="7200 RPM SAS 企业级HDD"
-        elif (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 120" | bc -l) )); then
+        elif (( $(echo "$disk_rand_read > 80" | bc -l) )); then
             SYSTEM_INFO[disk_category]="7200 RPM SATA HDD"
         else
-            SYSTEM_INFO[disk_category]="5400 RPM HDD（不推荐用于服务器）"
+            SYSTEM_INFO[disk_category]="5400 RPM HDD 或虚拟化低速盘"
+        fi
+        
+    fi
+    
+    # 统一应用限制（在分支外，确保对所有类型生效）
+    echo ""
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    log_info "应用智能评分算法..."
+    
+    local disk_seq=${PERFORMANCE_DATA[disk_seq_read]:-100}
+    local disk_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
+    
+    # 虚拟化环境特殊处理
+    if [ "${SYSTEM_INFO[disk_type]}" = "HDD" ] && (( $(echo "$disk_seq > 500 && $disk_iops < 1000" | bc -l) )); then
+        # HDD虚拟化环境：严格限制顺序速度贡献
+        log_warn "⚠️ 虚拟化环境特征（顺序${disk_seq}MB/s vs IOPS ${disk_iops}）"
+        log_warn "评分算法：以IOPS为主，忽略虚高的顺序速度"
+        
+        # 极严格限制顺序速度贡献（虚拟化环境的顺序速度无意义）
+        seq_read_norm=0.70
+        seq_write_norm=0.70
+        
+        log_info "调整后: 顺序读贡献=${seq_read_norm}, 顺序写贡献=${seq_write_norm}"
+        
+    elif [ "${SYSTEM_INFO[disk_type]}" = "SSD" ] && (( $(echo "$disk_seq > 1000 && $disk_iops < 10000" | bc -l) )); then
+        # SSD虚拟化环境受限
+        log_warn "⚠️ SSD虚拟化环境检测：IOPS性能受限"
+        
+        # SSD限制较宽松
+        if (( $(echo "$seq_read_norm > 2.0" | bc -l) )); then
+            seq_read_norm=2.0
+        fi
+        if (( $(echo "$seq_write_norm > 2.0" | bc -l) )); then
+            seq_write_norm=2.0
+        fi
+        
+    else
+        # 物理环境或正常虚拟化的通用限制
+        if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
+            # SSD最大限制
+            if (( $(echo "$seq_read_norm > 3.0" | bc -l) )); then
+                seq_read_norm=3.0
+            fi
+            if (( $(echo "$seq_write_norm > 3.0" | bc -l) )); then
+                seq_write_norm=3.0
+            fi
+            if (( $(echo "$rand_read_norm > 2.5" | bc -l) )); then
+                rand_read_norm=2.5
+            fi
+            if (( $(echo "$rand_write_norm > 2.5" | bc -l) )); then
+                rand_write_norm=2.5
+            fi
+        else
+            # HDD正常限制
+            if (( $(echo "$seq_read_norm > 1.5" | bc -l) )); then
+                seq_read_norm=1.5
+            fi
+            if (( $(echo "$seq_write_norm > 1.5" | bc -l) )); then
+                seq_write_norm=1.5
+            fi
+            if (( $(echo "$rand_read_norm > 1.5" | bc -l) )); then
+                rand_read_norm=1.5
+            fi
+            if (( $(echo "$rand_write_norm > 1.5" | bc -l) )); then
+                rand_write_norm=1.5
+            fi
         fi
     fi
     
-    # 计算原始性能分数
+    log_info "最终评分贡献: 顺序读=${seq_read_norm}, 顺序写=${seq_write_norm}"
+    log_info "               随机读=${rand_read_norm}, 随机写=${rand_write_norm}"
+    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # 设置虚拟化环境标记
+    local is_virtualized=0
+    local virt_warning=""
+    
+    local seq_read_val=${PERFORMANCE_DATA[disk_seq_read]:-0}
+    local iops_read_val=${PERFORMANCE_DATA[disk_rand_read_iops]:-0}
+    
+    if [ "${SYSTEM_INFO[disk_type]}" = "HDD" ] && (( $(echo "$seq_read_val > 500 && $iops_read_val < 1000" | bc -l) )); then
+        is_virtualized=1
+        SYSTEM_INFO[is_virtualized]="是（宿主机SSD，虚拟盘IOPS受限）"
+        virt_warning="⚠️ 虚拟化环境：顺序${seq_read_val}MB/s vs IOPS ${iops_read_val}"
+        PERFORMANCE_DATA[disk_virt_warning]="$virt_warning"
+    elif [ "${SYSTEM_INFO[disk_type]}" = "SSD" ] && (( $(echo "$seq_read_val > 1000 && $iops_read_val < 10000" | bc -l) )); then
+        is_virtualized=1
+        SYSTEM_INFO[is_virtualized]="是（SSD虚拟化受限）"
+        virt_warning="⚠️ SSD虚拟化环境：IOPS性能受限"
+        PERFORMANCE_DATA[disk_virt_warning]="$virt_warning"
+    else
+        SYSTEM_INFO[is_virtualized]="否"
+    fi
+    
+    # 计算原始性能分数（使用限制后的标准化值）
     local raw_disk_score=$(echo "scale=4; $seq_read_norm * $seq_read_weight + $seq_write_norm * $seq_write_weight + $rand_read_norm * $rand_read_weight + $rand_write_norm * $rand_write_weight" | bc)
+    
+    log_info "原始分数计算: ${raw_disk_score} (限制后)"
     
     # 映射到0-100标准分数
     PERFORMANCE_DATA[disk_score]=$(echo "scale=2; $raw_disk_score * 100" | bc)
     
-    # 存储原始测试结果（spiritLHLS/ecs格式）
-    # 无需额外计算，已存储在PERFORMANCE_DATA中
+    log_info "最终磁盘评分: ${PERFORMANCE_DATA[disk_score]}/100"
     
     # 确保分数在合理范围内
     local disk_score_int=$(echo "${PERFORMANCE_DATA[disk_score]}" | cut -d'.' -f1)
@@ -949,17 +1039,35 @@ deep_disk_benchmark() {
     fi
     
     log_success "磁盘综合性能评分: ${PERFORMANCE_DATA[disk_score]}/100"
-    log_info "顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
-    log_info "顺序写入: ${PERFORMANCE_DATA[disk_seq_write]} MB/s"
-    log_info "4K随机读IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]} ⭐服务器关键指标"
-    log_info "4K随机写IOPS: ${PERFORMANCE_DATA[disk_rand_write_iops]}"
-    log_info "识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
-    log_warn "重要说明："
+    echo ""
+    log_info "📊 磁盘性能测试结果："
+    log_info "  顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
+    log_info "  顺序写入: ${PERFORMANCE_DATA[disk_seq_write]} MB/s"
+    log_info "  4K随机读IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]} ⭐服务器关键指标"
+    log_info "  4K随机写IOPS: ${PERFORMANCE_DATA[disk_rand_write_iops]}"
+    log_info "  识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
+    
+    # 显示虚拟化环境检测结果
+    echo ""
+    if [ "${SYSTEM_INFO[is_virtualized]}" = "是" ] || [ "${SYSTEM_INFO[is_virtualized]}" = "是（SSD虚拟化受限）" ]; then
+        log_warn "🔍 虚拟化环境检测："
+        log_warn "  检测结果: ${SYSTEM_INFO[is_virtualized]}"
+        log_warn "  ${PERFORMANCE_DATA[disk_virt_warning]}"
+        log_warn "  说明: 顺序速度测到宿主机性能，但IOPS受虚拟化层限制"
+        log_warn "  影响: 实际4K随机性能才是虚拟机真实磁盘性能"
+        log_warn "  评分: 已根据IOPS限制评分（不受虚高的顺序速度影响）"
+    else
+        log_info "🔍 虚拟化环境检测: ${SYSTEM_INFO[is_virtualized]}"
+    fi
+    
+    echo ""
+    log_warn "💡 重要说明："
     log_warn "  - 本脚本使用FIO direct模式（绕过缓存，测真实磁盘性能）"
     log_warn "  - spiritLHLS/ecs的DD测试包含系统缓存（速度会虚高）"
-    log_warn "  - 若顺序速度高但IOPS低，说明是虚拟化环境或宿主机SSD虚拟盘"
     log_warn "  - 服务器环境应关注4K IOPS，而非顺序速度"
-    log_info "评分标准: FIO专业测试（更准确）+ spiritLHLS/ecs参考"
+    log_warn "  - 虚拟化环境的顺序速度仅供参考，IOPS才是真实性能"
+    echo ""
+    log_info "评分标准: FIO专业测试 + spiritLHLS/ecs参考 + 虚拟化环境智能识别"
     
     # 给出性能等级评价（基于4K随机读IOPS - 服务器最关键指标）
     local iops_read=$(echo "${PERFORMANCE_DATA[disk_rand_read_iops]}" | cut -d'.' -f1)
@@ -1065,7 +1173,10 @@ calculate_optimal_swap_advanced() {
     local mem_factor=$(echo "scale=4; 1.05 - ($mem_score / 100) * 0.1" | bc)
     
     # 磁盘性能调整系数（服务器版：0.85-1.15）
+    # 特别考虑虚拟化环境的影响
     local disk_factor
+    local is_virt=${SYSTEM_INFO[is_virtualized]:-"否"}
+    
     if [ "$disk_type" = "SSD" ]; then
         # 企业级SSD: 耐久度高，可以承受更多写入
         if (( $(echo "$disk_score > 70" | bc -l) )); then
@@ -1076,8 +1187,12 @@ calculate_optimal_swap_advanced() {
             disk_factor=0.85  # 入门级SSD（服务器不应降太多）
         fi
     else
-        # 企业级HDD: 性能较低，但服务器需要稳定性
-        if (( $(echo "$disk_score > 50" | bc -l) )); then
+        # 企业级HDD或虚拟化环境: 性能较低，需要更多swap
+        if [ "$is_virt" = "是" ]; then
+            # 虚拟化环境特殊处理：IOPS低，需要更多swap缓冲
+            disk_factor=1.20  # 虚拟化环境增加swap
+            log_warn "检测到虚拟化环境，IOPS受限，增加swap大小以应对IO性能波动"
+        elif (( $(echo "$disk_score > 50" | bc -l) )); then
             disk_factor=1.05   # 高性能SAS HDD
         elif (( $(echo "$disk_score > 25" | bc -l) )); then
             disk_factor=1.10   # 标准企业级HDD
@@ -1087,6 +1202,9 @@ calculate_optimal_swap_advanced() {
     fi
     
     log_info "服务器稳定性考虑：采用保守策略，确保足够swap空间"
+    if [ "$is_virt" = "是" ]; then
+        log_info "虚拟化环境调整：考虑到IOPS限制，适当增加swap以提高稳定性"
+    fi
     
     # 综合计算最优swap
     local optimal_swap=$(echo "scale=0; $base_swap * $cpu_factor * $mem_factor * $disk_factor" | bc | cut -d'.' -f1)
@@ -1164,7 +1282,10 @@ calculate_optimal_swappiness_advanced() {
     fi
     
     # 根据磁盘类型和性能微调（服务器版）
+    # 特别考虑虚拟化环境的影响
     local disk_adjustment=0
+    local is_virt=${SYSTEM_INFO[is_virtualized]:-"否"}
+    
     if [ "$disk_type" = "SSD" ]; then
         # 企业级SSD: 性能好但服务器仍应保守
         if (( $(echo "$disk_score > 70" | bc -l) )); then
@@ -1175,8 +1296,12 @@ calculate_optimal_swappiness_advanced() {
             disk_adjustment=0   # 低端SSD，不调整
         fi
     else
-        # HDD: 服务器应大幅降低swappiness避免swap抖动
-        if (( $(echo "$disk_score < 30" | bc -l) )); then
+        # HDD或虚拟化环境: 降低swappiness避免swap抖动
+        if [ "$is_virt" = "是" ]; then
+            # 虚拟化环境：IOPS不稳定，大幅降低swappiness
+            disk_adjustment=-15
+            log_warn "虚拟化环境检测：IOPS受限且不稳定，降低swappiness避免性能抖动"
+        elif (( $(echo "$disk_score < 30" | bc -l) )); then
             disk_adjustment=-10  # 低性能HDD，严重降低
             log_warn "HDD性能较低，建议升级到SSD或降低工作负载"
         elif (( $(echo "$disk_score < 50" | bc -l) )); then
@@ -1359,9 +1484,10 @@ ${YELLOW}磁盘信息 (FIO标准):${NC}
   设备:        ${SYSTEM_INFO[disk_device]}
   类型:        ${SYSTEM_INFO[disk_type]}
   识别等级:    ${SYSTEM_INFO[disk_category]:-未识别}
+  虚拟化环境:  ${SYSTEM_INFO[is_virtualized]:-未检测}
   ${CYAN}顺序读取:    ${PERFORMANCE_DATA[disk_seq_read]} MB/s${NC}
   ${CYAN}顺序写入:    ${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}
-  ${CYAN}4K随机读:    ${PERFORMANCE_DATA[disk_rand_read_iops]} IOPS${NC}
+  ${CYAN}4K随机读:    ${PERFORMANCE_DATA[disk_rand_read_iops]} IOPS ⭐真实性能${NC}
   ${CYAN}4K随机写:    ${PERFORMANCE_DATA[disk_rand_write_iops]} IOPS${NC}
   混合读写:    ${PERFORMANCE_DATA[disk_mixed_iops]} IOPS
   平均延迟:    ${PERFORMANCE_DATA[disk_latency]:-N/A} μs
@@ -1409,6 +1535,32 @@ EOF
         echo "  ✓ 增加page_cluster利用顺序读取优势"
     fi
     
+    # 虚拟化环境特殊提示
+    if [ "${SYSTEM_INFO[is_virtualized]}" != "否" ]; then
+        echo ""
+        echo -e "${RED}⚠️  虚拟化环境检测到：${NC}"
+        echo -e "${YELLOW}虚拟化状态: ${SYSTEM_INFO[is_virtualized]}${NC}"
+        echo ""
+        if [ "${PERFORMANCE_DATA[disk_virt_warning]}" != "" ]; then
+            echo -e "${YELLOW}${PERFORMANCE_DATA[disk_virt_warning]}${NC}"
+            echo ""
+        fi
+        echo -e "${CYAN}针对虚拟化环境的优化措施：${NC}"
+        echo "  ✅ 评分算法：降低顺序速度权重，以IOPS为准"
+        echo "     • 原因：虚拟化环境顺序速度受宿主机SSD影响，不代表真实性能"
+        echo "     • 实际：IOPS ${PERFORMANCE_DATA[disk_rand_read_iops]} 才是虚拟盘的真实能力"
+        echo ""
+        echo "  ✅ Swap大小：增加20%应对虚拟化IO波动"
+        echo "     • 原因：虚拟化环境IO性能不稳定，需要更大的缓冲空间"
+        echo ""
+        echo "  ✅ Swappiness：降低值避免频繁交换"
+        echo "     • 原因：虚拟磁盘IOPS有限，过度swap会严重影响性能"
+        echo ""
+        echo -e "${YELLOW}建议：${NC}"
+        echo "  • 如需高IOPS性能，建议联系服务商升级虚拟磁盘配置"
+        echo "  • 或考虑使用物理服务器/高性能云实例"
+    fi
+    
     echo ""
     
     local ram_gb=$(echo "scale=0; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc)
@@ -1429,78 +1581,6 @@ EOF
     fi
     
     echo ""
-    
-    # 添加评分体系说明
-    log_header "评分体系说明"
-    cat << EOF
-
-本脚本使用业界知名的开源VPS测评标准：
-
-${CYAN}spiritLHLS/ecs 项目${NC} - 知名VPS融合怪测评标准
-  • 项目地址：https://github.com/spiritLHLS/ecs
-  • Star数：6.2k+ (业界广泛认可)
-  • CPU评分：使用Sysbench events/sec作为直接评分标准
-  • 内存评分：参考Lemonbench单线程读写速度(MB/s)
-  • 磁盘评分：FIO 4K IOPS + 顺序带宽双重标准
-  • 数据积累：基于大量VPS实际测试数据
-
-${CYAN}测试工具（与ecs项目对标）${NC}
-  • CPU：Sysbench CPU测试（素数计算）
-  • 内存：Sysbench Memory（感谢Lemonbench）
-  • 磁盘：FIO专业存储测试
-
-${CYAN}评分参考值${NC}
-  • CPU单线程：800 Scores = 主流服务器水平
-  • 内存读取：16000+ MB/s = DDR4-2400/2666 ECC
-  • 磁盘4K读：10k+ IOPS = 入门SSD, 100k+ = 企业NVMe
-
-${YELLOW}重要说明 - 为什么数据可能与spiritLHLS/ecs不同：${NC}
-
-${RED}1. CPU测试差异（最关键）：${NC}
-   ${YELLOW}测试时长差异：${NC}
-   • spiritLHLS/ecs: 使用5秒快速测试（Fast Mode）
-   • 本脚本: 同时提供5秒和10秒测试
-   
-   ${YELLOW}素数参数差异（影响更大）：${NC}
-   • spiritLHLS/ecs: 可能使用 --cpu-max-prime=10000
-   • 本脚本默认: --cpu-max-prime=20000（更严格）
-   • 本脚本兼容: 同时测试10000和20000两种参数
-   
-   ${CYAN}关键发现：${NC}
-   素数参数越小，计算越快，分数越高！
-   • 10000素数: ~800 Scores（接近ecs）
-   • 20000素数: ~300 Scores（更严格）
-   
-   ${GREEN}建议：${NC}
-   - 与ecs对比: 看10000素数测试结果
-   - 服务器优化: 以20000素数测试为准（更能反映持续性能）
-
-${RED}2. 磁盘测试差异（最重要）：${NC}
-   • spiritLHLS/ecs: 使用DD测试（包含系统缓存，速度虚高）
-     例如：5.3 GB/s 实际是内存缓存速度，不是磁盘速度
-   • 本脚本: 使用FIO direct模式（绕过缓存，测真实性能）
-     例如：100 IOPS 才是真实的HDD随机读性能
-   
-   ${CYAN}DD测试 vs FIO测试对比：${NC}
-   DD测试（含缓存）:  5300 MB/s 读取速度 ← 这是假象！
-   FIO测试（真实）:   100 IOPS 4K随机读 ← 这才是真相！
-   
-   ${YELLOW}对于服务器环境，FIO测试的4K IOPS比DD顺序速度更有参考价值！${NC}
-
-${RED}3. 虚拟化环境特征：${NC}
-   如果您的测试显示：
-   • 顺序读写速度很高（>1000 MB/s）
-   • 但4K IOPS很低（<1000）
-   说明：宿主机使用SSD，但虚拟磁盘I/O性能被限制
-   
-${GREEN}总结：${NC}
-  本脚本提供更专业、更准确的性能测试（特别是磁盘IOPS）
-  适合服务器环境的真实性能评估和虚拟内存优化决策
-  
-  如需与spiritLHLS/ecs完全一致的结果，请对比5秒CPU测试分数
-  但建议以本脚本的FIO IOPS数据作为优化依据（更真实）
-
-EOF
 }
 
 # 应用优化设置
@@ -1664,6 +1744,8 @@ CPU配置:
 磁盘配置:
   设备路径:          ${SYSTEM_INFO[disk_device]}
   磁盘类型:          ${SYSTEM_INFO[disk_type]}
+  虚拟化环境:        ${SYSTEM_INFO[is_virtualized]:-未检测}
+  识别等级:          ${SYSTEM_INFO[disk_category]:-未识别}
 
 ───────────────────────────────────────────────────────────────────────
 二、性能测试结果
