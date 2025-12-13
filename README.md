@@ -17,13 +17,13 @@
 ### 一键安装运行
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/optimize_virtual_memory.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/jiaqp/one_swap/refs/heads/main/optimize_virtual_memory.sh | sudo bash
 ```
 
 或使用curl：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/optimize_virtual_memory.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/jiaqp/one_swap/refs/heads/main/optimize_virtual_memory.sh | sudo bash
 ```
 
 ---
@@ -135,14 +135,14 @@ curl -fsSL https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/
 
 ```bash
 # 下载并执行（自动应用所有优化）
-wget -qO- https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/optimize_virtual_memory.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/jiaqp/one_swap/refs/heads/main/optimize_virtual_memory.sh | sudo bash
 ```
 
 ### 手动下载后执行
 
 ```bash
 # 下载脚本
-wget https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/optimize_virtual_memory.sh
+wget https://raw.githubusercontent.com/jiaqp/one_swap/refs/heads/main/optimize_virtual_memory.sh
 
 # 添加执行权限
 chmod +x optimize_virtual_memory.sh
@@ -154,7 +154,7 @@ sudo ./optimize_virtual_memory.sh
 ### 禁用颜色输出
 
 ```bash
-wget https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/optimize_virtual_memory.sh
+wget https://raw.githubusercontent.com/jiaqp/one_swap/refs/heads/main/optimize_virtual_memory.sh
 sudo bash optimize_virtual_memory.sh --no-color
 ```
 
