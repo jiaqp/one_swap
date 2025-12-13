@@ -1414,56 +1414,54 @@ calculate_advanced_vm_parameters() {
 show_professional_report() {
     log_header "专业性能测试与优化报告"
     
-    cat << EOF
-
-${CYAN}╔═══════════════════════════════════════════════════════════════════╗
-║                     系统硬件配置信息                              ║
-╚═══════════════════════════════════════════════════════════════════╝${NC}
-
-${YELLOW}CPU (Sysbench):${NC}
-  ${SYSTEM_INFO[cpu_model]}
-  ${SYSTEM_INFO[cpu_cores]} 核心 @ ${SYSTEM_INFO[cpu_max_freq]} MHz
-  ${CYAN}测试得分: ${PERFORMANCE_DATA[cpu_single_thread]} Scores ⭐对标ecs${NC}
-  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100
-
-${YELLOW}内存 (Lemonbench):${NC}
-  $(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB - ${SYSTEM_INFO[mem_category]:-未识别}
-  ${CYAN}读取: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s  |  写入: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}
-  标准化评分: ${PERFORMANCE_DATA[mem_score]}/100
-
-${YELLOW}磁盘 (FIO):${NC}
-  ${SYSTEM_INFO[disk_device]} - ${SYSTEM_INFO[disk_type]} - ${SYSTEM_INFO[disk_category]:-未识别}
-  虚拟化: ${SYSTEM_INFO[is_virtualized]:-否}
-  ${CYAN}顺序读写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}
-  ${CYAN}4K IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐真实性能${NC}
-  标准化评分: ${PERFORMANCE_DATA[disk_score]}/100
-
-${CYAN}╔═══════════════════════════════════════════════════════════════════╗
-║                   商业级优化参数推荐                              ║
-╚═══════════════════════════════════════════════════════════════════╝${NC}
-
-${GREEN}核心参数:${NC}
-  vm.swappiness                = ${PERFORMANCE_DATA[optimal_swappiness]}
-  推荐Swap大小                 = ${PERFORMANCE_DATA[optimal_swap]} MB ($(echo "scale=2; ${PERFORMANCE_DATA[optimal_swap]}/1024" | bc) GB)
-
-${GREEN}缓存控制参数:${NC}
-  vm.vfs_cache_pressure        = ${PERFORMANCE_DATA[vfs_cache_pressure]}
-  vm.dirty_ratio               = ${PERFORMANCE_DATA[dirty_ratio]}
-  vm.dirty_background_ratio    = ${PERFORMANCE_DATA[dirty_background_ratio]}
-  vm.dirty_expire_centisecs    = ${PERFORMANCE_DATA[dirty_expire]}
-  vm.dirty_writeback_centisecs = ${PERFORMANCE_DATA[dirty_writeback]}
-
-${GREEN}内存管理参数:${NC}
-  vm.min_free_kbytes           = ${PERFORMANCE_DATA[min_free_kbytes]} KB
-  vm.page_cluster              = ${PERFORMANCE_DATA[page_cluster]}
-  vm.overcommit_memory         = ${PERFORMANCE_DATA[overcommit_memory]}
-  vm.overcommit_ratio          = ${PERFORMANCE_DATA[overcommit_ratio]}
-
-${CYAN}╔═══════════════════════════════════════════════════════════════════╗
-║                       优化建议说明                                ║
-╚═══════════════════════════════════════════════════════════════════╝${NC}
-
-EOF
+    echo ""
+    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗"
+    echo -e "║                     系统硬件配置信息                              ║"
+    echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}CPU (Sysbench):${NC}"
+    echo "  ${SYSTEM_INFO[cpu_model]}"
+    echo "  ${SYSTEM_INFO[cpu_cores]} 核心 @ ${SYSTEM_INFO[cpu_max_freq]} MHz"
+    echo -e "  ${CYAN}测试得分: ${PERFORMANCE_DATA[cpu_single_thread]} Scores ⭐对标ecs${NC}"
+    echo "  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100"
+    echo ""
+    echo -e "${YELLOW}内存 (Lemonbench):${NC}"
+    echo "  $(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB - ${SYSTEM_INFO[mem_category]:-未识别}"
+    echo -e "  ${CYAN}读取: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s  |  写入: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}"
+    echo "  标准化评分: ${PERFORMANCE_DATA[mem_score]}/100"
+    echo ""
+    echo -e "${YELLOW}磁盘 (FIO):${NC}"
+    echo "  ${SYSTEM_INFO[disk_device]} - ${SYSTEM_INFO[disk_type]} - ${SYSTEM_INFO[disk_category]:-未识别}"
+    echo "  虚拟化: ${SYSTEM_INFO[is_virtualized]:-否}"
+    echo -e "  ${CYAN}顺序读写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}"
+    echo -e "  ${CYAN}4K IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐真实性能${NC}"
+    echo "  标准化评分: ${PERFORMANCE_DATA[disk_score]}/100"
+    echo ""
+    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗"
+    echo -e "║                   商业级优化参数推荐                              ║"
+    echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${GREEN}核心参数:${NC}"
+    echo "  vm.swappiness                = ${PERFORMANCE_DATA[optimal_swappiness]}"
+    echo "  推荐Swap大小                 = ${PERFORMANCE_DATA[optimal_swap]} MB ($(echo "scale=2; ${PERFORMANCE_DATA[optimal_swap]}/1024" | bc) GB)"
+    echo ""
+    echo -e "${GREEN}缓存控制参数:${NC}"
+    echo "  vm.vfs_cache_pressure        = ${PERFORMANCE_DATA[vfs_cache_pressure]}"
+    echo "  vm.dirty_ratio               = ${PERFORMANCE_DATA[dirty_ratio]}"
+    echo "  vm.dirty_background_ratio    = ${PERFORMANCE_DATA[dirty_background_ratio]}"
+    echo "  vm.dirty_expire_centisecs    = ${PERFORMANCE_DATA[dirty_expire]}"
+    echo "  vm.dirty_writeback_centisecs = ${PERFORMANCE_DATA[dirty_writeback]}"
+    echo ""
+    echo -e "${GREEN}内存管理参数:${NC}"
+    echo "  vm.min_free_kbytes           = ${PERFORMANCE_DATA[min_free_kbytes]} KB"
+    echo "  vm.page_cluster              = ${PERFORMANCE_DATA[page_cluster]}"
+    echo "  vm.overcommit_memory         = ${PERFORMANCE_DATA[overcommit_memory]}"
+    echo "  vm.overcommit_ratio          = ${PERFORMANCE_DATA[overcommit_ratio]}"
+    echo ""
+    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗"
+    echo -e "║                       优化建议说明                                ║"
+    echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
 
     # 根据系统类型给出具体建议
     if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
