@@ -698,10 +698,11 @@ deep_cpu_benchmark() {
     
     # 定义当前服务器市场的基准（2024年标准）
     # 100分基准：Intel Xeon Gold 6240 / AMD EPYC 7742 级别
-    local market_baseline_single=1300   # 顶级服务器单线程性能
-    local market_baseline_multi_per_core=1200  # 多核扩展效率
-    local market_baseline_int=2000      # 整数运算基准
-    local market_baseline_float=1700    # 浮点运算基准
+    # 基准数据来源：spiritLHLS/ecs项目社区数据 + PassMark验证
+    local market_baseline_single=1300   # 顶级服务器单线程性能 (sysbench 5s, prime 10000)
+    local market_baseline_multi_per_core=1200  # 多核扩展效率（考虑超线程和缓存竞争）
+    local market_baseline_int=2100      # 整数运算基准 (stress-ng bogo ops/s, 修正)
+    local market_baseline_float=1800    # 浮点运算基准 (stress-ng bogo ops/s, 修正)
     
     # 标准化（基于当前服务器市场水平）
     local single_norm=$(echo "scale=4; ${cpu_single_score:-0} / $market_baseline_single" | bc -l)
@@ -863,9 +864,10 @@ deep_memory_benchmark() {
     # 顶级服务器内存 (DDR5 ECC):           5,000-7,000+分
     
     # 权重分配（基于SPEC标准和服务器工作负载）
-    local read_weight=0.40    # 服务器读操作更多
-    local write_weight=0.30
-    local random_weight=0.30  # 随机访问对数据库等应用很重要
+    # 注意：权重总和必须为1.0
+    local read_weight=0.40    # 服务器读操作更多 (40%)
+    local write_weight=0.30   # 写操作次之 (30%)
+    local random_weight=0.30  # 随机访问对数据库等应用很重要 (30%)
     
     # 定义当前服务器市场的内存基准（2024年标准）
     # 评分标准：反映在当前服务器市场中的绝对水平
@@ -1301,19 +1303,26 @@ deep_disk_benchmark() {
         
     else
         # 定义当前服务器市场的HDD基准（2024年标准）
-        # 注意：HDD在当前服务器市场中已经是低端存储
-        # 评分标准：相对于整体存储市场
-        #   40-60分：顶级HDD（15K RPM SAS企业级） - 但在整体市场中仍是中低端
+        # 关键原则：HDD评分必须基于IOPS，而非顺序速度
+        # 原因：虚拟化环境顺序速度可能虚高（来自宿主机SSD）
+        
+        # 评分策略：
+        #   1. 以IOPS为主要评分依据（权重70%）
+        #   2. 顺序速度仅作辅助（权重30%）
+        #   3. 虚拟化环境自动识别并特殊处理
+        
+        # HDD在整体存储市场中的定位：
+        #   40-60分：顶级HDD（15K RPM SAS）- 整体市场中低端
         #   25-40分：主流HDD（10K/7200 RPM SAS）
         #   10-25分：入门HDD（7200 RPM SATA）
         #   <10分：淘汰级HDD（5400 RPM）
         
-        # 注意：基准设置考虑HDD相对于整个存储市场（包括SSD）的位置
-        # 即使是顶级HDD，在包含SSD的整体市场中也只能评中低分
-        local baseline_seq_read=280      # 15K RPM SAS（HDD最高端）对应市场约50分
-        local baseline_seq_write=280
-        local baseline_rand_read_iops=250   # 15K RPM SAS IOPS
-        local baseline_rand_write_iops=220
+        # 100分基准：仍用顶级NVMe，让HDD自然落在低分区
+        # 这样能真实反映HDD在整体市场中的劣势
+        local baseline_seq_read=1000      # 用中等水平（让顺序速度权重降低）
+        local baseline_seq_write=900
+        local baseline_rand_read_iops=10000   # 用入门SSD级别作为满分（让HDD IOPS自然很低）
+        local baseline_rand_write_iops=8000
         
         # 确保数值有效
         local disk_seq_read=${PERFORMANCE_DATA[disk_seq_read]:-100}
@@ -1565,10 +1574,20 @@ calculate_optimal_swap_advanced() {
     # 基础swap计算（服务器环境算法 - Red Hat/Oracle推荐）
     # 服务器建议：即使内存很大，也保持一定swap以应对突发情况
     local base_swap
-    if (( $(echo "$ram_gb < 2" | bc -l) )); then
-        # 极小内存服务器（不推荐生产使用）
+    if (( $(echo "$ram_gb < 1" | bc -l) )); then
+        # 极小内存服务器（<1GB）- 特殊处理
+        if [[ "${SYSTEM_INFO[is_virtualized]}" == "是"* ]]; then
+            # 虚拟化+极小内存：需要更激进的swap策略
+            base_swap=$(echo "scale=0; $ram_mb * 2.5" | bc)
+            log_warn "极小内存虚拟化环境，采用激进swap策略(RAM×2.5)"
+        else
+            base_swap=$(echo "scale=0; $ram_mb * 2.2" | bc)
+        fi
+        log_warn "内存过小（<1GB），强烈不建议用于生产服务器"
+    elif (( $(echo "$ram_gb < 2" | bc -l) )); then
+        # 小内存服务器（1-2GB）
         base_swap=$(echo "scale=0; $ram_mb * 2" | bc)
-        log_warn "内存过小（<2GB），不建议用于生产服务器"
+        log_warn "内存较小（<2GB），不建议用于生产服务器"
     elif (( $(echo "$ram_gb < 4" | bc -l) )); then
         # 小内存服务器
         base_swap=$(echo "scale=0; $ram_mb * 2" | bc)
@@ -1617,7 +1636,8 @@ calculate_optimal_swap_advanced() {
         fi
     else
         # 企业级HDD或虚拟化环境: 性能较低，需要更多swap
-        if [ "$is_virt" = "是" ]; then
+        # 修复：使用通配符匹配，支持"是（xxx）"格式
+        if [[ "$is_virt" == "是"* ]]; then
             # 虚拟化环境特殊处理：IOPS低，需要更多swap缓冲
             disk_factor=1.20  # 虚拟化环境增加swap
             log_warn "检测到虚拟化环境，IOPS受限，增加swap大小以应对IO性能波动"
@@ -1631,7 +1651,7 @@ calculate_optimal_swap_advanced() {
     fi
     
     log_info "服务器稳定性考虑：采用保守策略，确保足够swap空间"
-    if [ "$is_virt" = "是" ]; then
+    if [[ "$is_virt" == "是"* ]]; then
         log_info "虚拟化环境调整：考虑到IOPS限制，适当增加swap以提高稳定性"
     fi
     
@@ -1726,7 +1746,7 @@ calculate_optimal_swappiness_advanced() {
         fi
     else
         # HDD或虚拟化环境: 降低swappiness避免swap抖动
-        if [ "$is_virt" = "是" ]; then
+        if [[ "$is_virt" == "是"* ]]; then
             # 虚拟化环境：IOPS不稳定，大幅降低swappiness
             disk_adjustment=-15
             log_warn "虚拟化环境检测：IOPS受限且不稳定，降低swappiness避免性能抖动"
@@ -1788,6 +1808,7 @@ calculate_advanced_vm_parameters() {
     
     # 2. vm.dirty_ratio
     # 当脏页达到内存的这个百分比时，进程会被阻塞并强制写回
+    # 关键原则：内存越小，dirty_ratio应该越低（避免占用过多内存）
     if [ "$disk_type" = "SSD" ]; then
         if (( $(echo "$disk_score > 70" | bc -l) )); then
             PERFORMANCE_DATA[dirty_ratio]=40  # 高性能SSD
@@ -1795,13 +1816,22 @@ calculate_advanced_vm_parameters() {
             PERFORMANCE_DATA[dirty_ratio]=30  # 普通SSD
         fi
     else
-        # HDD根据性能分级
-        if (( $(echo "$disk_score > 40" | bc -l) )); then
+        # HDD根据性能分级和内存大小
+        if (( $(echo "$ram_gb < 1" | bc -l) )); then
+            # 极小内存：dirty_ratio必须很低，避免脏页占用太多宝贵内存
+            PERFORMANCE_DATA[dirty_ratio]=5
+            log_info "极小内存系统：降低dirty_ratio到5%，避免脏页占用过多内存"
+        elif (( $(echo "$disk_score > 40" | bc -l) )); then
             PERFORMANCE_DATA[dirty_ratio]=20
         elif (( $(echo "$disk_score > 20" | bc -l) )); then
             PERFORMANCE_DATA[dirty_ratio]=15
         else
-            PERFORMANCE_DATA[dirty_ratio]=10  # 低性能HDD
+            # 低性能HDD且低内存
+            if (( $(echo "$ram_gb < 2" | bc -l) )); then
+                PERFORMANCE_DATA[dirty_ratio]=8
+            else
+                PERFORMANCE_DATA[dirty_ratio]=10
+            fi
         fi
     fi
     
@@ -1840,11 +1870,25 @@ calculate_advanced_vm_parameters() {
     # 根据CPU核心数调整（更多核心需要更多空闲内存）
     min_free=$(echo "scale=0; $min_free * (1 + $cpu_cores * 0.05)" | bc | cut -d'.' -f1)
     
-    # 限制范围：64MB - 1GB
-    if [ $min_free -lt 65536 ]; then
-        min_free=65536
-    elif [ $min_free -gt 1048576 ]; then
-        min_free=1048576
+    # 限制范围：动态计算，避免占用过多内存
+    local min_limit=$(echo "scale=0; ${SYSTEM_INFO[total_ram_kb]} * 0.02" | bc | cut -d'.' -f1)  # 最低2%
+    local max_limit=$(echo "scale=0; ${SYSTEM_INFO[total_ram_kb]} * 0.10" | bc | cut -d'.' -f1)  # 最高10%
+    
+    # 绝对值限制：16MB - 1GB
+    if [ $min_limit -lt 16384 ]; then
+        min_limit=16384  # 最低16MB
+    fi
+    if [ $min_limit -gt 65536 ]; then
+        min_limit=65536  # 超过64MB后不再按比例增长
+    fi
+    if [ $max_limit -gt 1048576 ]; then
+        max_limit=1048576  # 最高1GB
+    fi
+    
+    if [ $min_free -lt $min_limit ]; then
+        min_free=$min_limit
+    elif [ $min_free -gt $max_limit ]; then
+        min_free=$max_limit
     fi
     
     PERFORMANCE_DATA[min_free_kbytes]=$min_free
