@@ -6,43 +6,24 @@
 # 版本：3.0 Server Edition
 # 适用场景：Linux服务器环境（Web服务器、数据库服务器、应用服务器等）
 #
-# 性能评分标准体系（对标 spiritLHLS/ecs 项目标准）：
+# 性能测试标准（对标 spiritLHLS/ecs 项目）：
 # ===========================================================
 # 参考项目：https://github.com/spiritLHLS/ecs
 # VPS融合怪服务器测评项目 - 业界知名的开源VPS测评标准
 # 
-# CPU性能评分：使用 Sysbench CPU 测试（素数计算）
-#   - 评分方式：Sysbench events/sec（每秒事件数）
-#   - 参考基准值（单线程 @5sec Fast Mode）：
-#     * 低端VPS/老旧CPU:      200-500 Scores
-#     * 入门服务器:           500-800 Scores
-#     * 主流服务器:           800-1200 Scores  
-#     * 中高端服务器:         1200-1800 Scores
-#     * 高端服务器:           1800-2500 Scores
-#     * 顶级服务器:           2500+ Scores
+# CPU性能测试：使用 Sysbench CPU（素数计算）
+#   - 测试指标：events/sec（每秒事件数）
 #   - 测试命令：sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run
-#   - 数据来源：spiritLHLS/ecs 项目实际测试数据积累
+#   - 数据来源：spiritLHLS/ecs 项目实际测试数据
 #
-# 内存性能评分：使用 Sysbench Memory + Lemonbench 标准
-#   - 评分方式：MB/s（兆字节/秒）
-#   - 参考基准值（单线程测试）：
-#     * DDR3-1333/1600 ECC:   8,000-11,000 MB/s
-#     * DDR4-2133 ECC:        13,000-15,000 MB/s
-#     * DDR4-2400 ECC:        15,000-17,000 MB/s
-#     * DDR4-2666 ECC:        17,000-20,000 MB/s
-#     * DDR4-3200 ECC:        20,000-25,000 MB/s
-#     * DDR5-4800+ ECC:       30,000+ MB/s
+# 内存性能测试：使用 Sysbench Memory
+#   - 测试指标：MB/s（兆字节/秒）
 #   - 测试方式：单线程读写测试
 #   - 数据来源：Lemonbench 项目标准
 #
-# 磁盘性能评分：使用 FIO + DD 双重测试
-#   - FIO 4K随机 IOPS（服务器最关键指标）：
-#     * 低端HDD:              50-150 IOPS
-#     * 企业HDD:              150-300 IOPS
-#     * 入门SSD:              1k-10k IOPS
-#     * 企业SATA SSD:         30k-90k IOPS
-#     * 企业NVMe SSD:         100k-500k IOPS
-#   - DD 顺序读写速度：
+# 磁盘性能测试：使用 FIO 专业工具
+#   - 关键指标：FIO 4K随机 IOPS（服务器最关键性能指标）
+#   - 辅助指标：顺序读写速度（MB/s）
 #     * HDD:                  80-200 MB/s
 #     * SATA SSD:             400-550 MB/s
 #     * NVMe SSD:             1500-7000 MB/s
@@ -152,7 +133,6 @@ install_professional_tools() {
     local tools=(
         "fio"           # 专业存储性能测试工具
         "sysbench"      # 综合性能基准测试
-        "stress-ng"     # CPU/内存压力测试
         "hdparm"        # 硬盘参数工具
         "smartmontools" # 硬盘SMART信息
         "dmidecode"     # DMI/SMBIOS信息
@@ -173,9 +153,6 @@ install_professional_tools() {
                 ;;
             "sysbench")
                 command -v sysbench &> /dev/null || missing_tools+=("sysbench")
-                ;;
-            "stress-ng")
-                command -v stress-ng &> /dev/null || missing_tools+=("stress-ng")
                 ;;
             "hdparm")
                 command -v hdparm &> /dev/null || missing_tools+=("hdparm")
@@ -225,571 +202,37 @@ install_professional_tools() {
     fi
 }
 
-# CPU性能数据库对比（基于PassMark和ecs项目数据）
-compare_with_database() {
-    local cpu_model="${SYSTEM_INFO[cpu_model]}"
-    local user_score=$(echo "${PERFORMANCE_DATA[cpu_single_thread]}" | cut -d'.' -f1)
-    
-    # 内置常见CPU基准数据库（Sysbench 5秒 素数10000，来源：ecs项目社区数据）
-    # 格式：CPU型号关键词|典型分数|PassMark单线程|等级
-    local cpu_database=(
-        # Intel Xeon E5系列（常见VPS/云服务器）
-        "E5-2683 v4|800|1891|主流服务器CPU（2016年）"
-        "E5-2680 v4|820|1920|主流服务器CPU"
-        "E5-2690 v4|850|1950|高性能服务器CPU"
-        "E5-2650 v4|780|1850|入门服务器CPU"
-        "E5-2630 v4|750|1800|入门服务器CPU"
-        
-        # Intel Xeon E5 v3系列
-        "E5-2680 v3|750|1820|主流服务器CPU（2014年）"
-        "E5-2683 v3|780|1860|主流服务器CPU"
-        "E5-2690 v3|800|1890|高性能服务器CPU"
-        
-        # Intel Xeon Gold/Platinum（新一代）
-        "Gold 6132|1100|2350|高端服务器CPU（2017年）"
-        "Gold 6140|1150|2400|高端服务器CPU"
-        "Gold 6240|1300|2550|高端服务器CPU（2019年）"
-        "Platinum 8160|1200|2450|顶级服务器CPU"
-        "Platinum 8280|1400|2650|顶级服务器CPU"
-        
-        # AMD EPYC系列
-        "EPYC 7551|950|2100|AMD高性能服务器（2017年）"
-        "EPYC 7601|1000|2150|AMD顶级服务器"
-        "EPYC 7742|1600|2850|AMD顶级服务器（第二代）"
-        "EPYC 7763|1800|3100|AMD顶级服务器（第三代）"
-        
-        # Intel Core i系列（常见独立服务器）
-        "i9-9900K|2000|3050|高性能桌面/独立服务器"
-        "i7-9700K|1800|2900|高性能桌面"
-        "i9-10900K|2100|3150|高性能桌面（2020年）"
-        "i9-12900K|2800|3900|高性能桌面（2021年）"
-        
-        # 常见VPS CPU
-        "E5-2670 v3|700|1780|常见VPS CPU"
-        "E5-2680 v2|650|1720|常见VPS CPU（老旧）"
-    )
-    
-    local found=0
-    local matched_cpu=""
-    local expected_score=0
-    local passmark_score=0
-    local cpu_level=""
-    
-    # 搜索匹配的CPU
-    for entry in "${cpu_database[@]}"; do
-        IFS='|' read -r cpu_pattern expect_sc pm_sc level <<< "$entry"
-        if echo "$cpu_model" | grep -qi "$cpu_pattern"; then
-            found=1
-            matched_cpu="$cpu_pattern"
-            expected_score=$expect_sc
-            passmark_score=$pm_sc
-            cpu_level="$level"
-            break
-        fi
-    done
-    
-    if [ $found -eq 1 ]; then
-        echo ""
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        log_info "📊 与权威数据库对比（数据来源：PassMark + ecs项目）"
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        log_info "识别CPU: $matched_cpu"
-        log_info "CPU等级: $cpu_level"
-        echo ""
-        log_info "性能对比："
-        log_info "  您的得分:     $user_score Scores"
-        log_info "  同型号典型值: $expected_score Scores"
-        log_info "  PassMark单线程: $passmark_score"
-        
-        # 计算性能差异
-        local diff=$((user_score - expected_score))
-        local percent=$(echo "scale=1; ($user_score - $expected_score) * 100 / $expected_score" | bc 2>/dev/null || echo "0")
-        
-        echo ""
-        if [ $diff -gt 50 ]; then
-            log_success "🎉 您的CPU性能超出同型号典型值 ${percent}%！"
-            log_info "可能原因：CPU超频、优化良好的系统、或较新批次"
-        elif [ $diff -gt 0 ]; then
-            log_success "✅ 您的CPU性能略优于同型号典型值 (+${percent}%)"
-        elif [ $diff -gt -50 ]; then
-            log_warn "⚠️  您的CPU性能略低于同型号典型值 (${percent}%)"
-            log_info "可能原因：CPU降频、虚拟化性能损耗、或系统负载"
-        else
-            log_warn "⚠️  您的CPU性能明显低于同型号典型值 (${percent}%)"
-            log_warn "建议检查："
-            log_warn "  • 是否有CPU频率限制 (cpufreq-info)"
-            log_warn "  • 是否虚拟化性能损耗过大"
-            log_warn "  • 系统是否有其他进程占用CPU"
-        fi
-        
-        # PassMark对比
-        echo ""
-        log_info "参考：PassMark单线程基准 = $passmark_score"
-        log_info "说明：PassMark是全球权威的CPU性能数据库"
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        
-        # 保存标准值供评分系统使用
-        PERFORMANCE_DATA[cpu_expected_score]=$expected_score
-        PERFORMANCE_DATA[cpu_found_in_db]="yes"
-    else
-        echo ""
-        log_warn "未在数据库中找到您的CPU型号：$cpu_model"
-        log_info "这可能是较新或较少见的CPU型号"
-        log_info "您的得分：$user_score Scores 可作为此CPU的参考基准"
-        
-        # 未找到，使用固定基准
-        PERFORMANCE_DATA[cpu_expected_score]=1000
-        PERFORMANCE_DATA[cpu_found_in_db]="no"
-    fi
-}
-
-# 内存性能数据库对比（基于标准内存规格）
-compare_memory_with_database() {
-    local mem_read=$(echo "${PERFORMANCE_DATA[mem_read_bandwidth]}" | cut -d'.' -f1)
-    local mem_write=$(echo "${PERFORMANCE_DATA[mem_write_bandwidth]}" | cut -d'.' -f1)
-    local mem_type="${SYSTEM_INFO[mem_type]:-Unknown}"
-    local mem_speed="${SYSTEM_INFO[mem_speed]:-0}"
-    
-    # 内存性能数据库（数据来源：标准规格 + Lemonbench社区测试）
-    # 格式：内存类型|典型读取(MB/s)|典型写入(MB/s)|PassMark内存分|说明
-    local memory_database=(
-        # DDR5服务器内存（最新一代）
-        "DDR5-4800|38000|25000|4500|DDR5-4800 ECC（第四代至强/EPYC）"
-        "DDR5-5600|45000|30000|5200|DDR5-5600 ECC（高端服务器）"
-        
-        # DDR4服务器内存（主流）
-        "DDR4-3200|20000|15000|3800|DDR4-3200 ECC（主流服务器）"
-        "DDR4-2933|19000|14500|3600|DDR4-2933 ECC（主流服务器）"
-        "DDR4-2666|17000|13000|3400|DDR4-2666 ECC（主流服务器）"
-        "DDR4-2400|16000|12000|3200|DDR4-2400 ECC（入门服务器）"
-        "DDR4-2133|14000|10500|2900|DDR4-2133 ECC（老旧服务器）"
-        
-        # DDR3服务器内存（老旧）
-        "DDR3-1866|13000|9800|2600|DDR3-1866 ECC（老旧服务器）"
-        "DDR3-1600|11000|8500|2400|DDR3-1600 ECC（老旧服务器）"
-        "DDR3-1333|9000|7000|2100|DDR3-1333 ECC（非常老旧）"
-    )
-    
-    local found=0
-    local matched_type=""
-    local expected_read=0
-    local expected_write=0
-    local passmark_score=0
-    local mem_desc=""
-    
-    # 根据读取速度匹配最接近的内存类型
-    local best_match_diff=999999
-    for entry in "${memory_database[@]}"; do
-        IFS='|' read -r type exp_read exp_write pm_sc desc <<< "$entry"
-        local diff=$((mem_read - exp_read))
-        [ $diff -lt 0 ] && diff=$((-diff))
-        
-        if [ $diff -lt $best_match_diff ]; then
-            best_match_diff=$diff
-            matched_type="$type"
-            expected_read=$exp_read
-            expected_write=$exp_write
-            passmark_score=$pm_sc
-            mem_desc="$desc"
-            found=1
-        fi
-    done
-    
-    if [ $found -eq 1 ]; then
-        echo ""
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        log_info "📊 与权威数据库对比（数据来源：标准规格 + Lemonbench）"
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        log_info "识别内存: $mem_desc"
-        log_info "匹配规格: $matched_type"
-        echo ""
-        log_info "性能对比："
-        log_info "  您的读取速度: $mem_read MB/s"
-        log_info "  标准读取速度: $expected_read MB/s"
-        log_info "  您的写入速度: $mem_write MB/s"
-        log_info "  标准写入速度: $expected_write MB/s"
-        log_info "  PassMark内存分: $passmark_score"
-        
-        # 计算读取性能差异
-        local read_diff=$((mem_read - expected_read))
-        local read_percent=$(echo "scale=1; $read_diff * 100 / $expected_read" | bc 2>/dev/null || echo "0")
-        
-        # 计算写入性能差异
-        local write_diff=$((mem_write - expected_write))
-        local write_percent=$(echo "scale=1; $write_diff * 100 / $expected_write" | bc 2>/dev/null || echo "0")
-        
-        echo ""
-        if [ $read_diff -gt 2000 ]; then
-            log_success "🎉 读取速度超出标准 ${read_percent}%！"
-        elif [ $read_diff -gt 0 ]; then
-            log_success "✅ 读取速度符合标准 (+${read_percent}%)"
-        elif [ $read_diff -gt -2000 ]; then
-            log_warn "⚠️  读取速度略低于标准 (${read_percent}%)"
-        else
-            log_warn "⚠️  读取速度明显低于标准 (${read_percent}%)"
-            log_warn "可能原因：内存通道未满配、频率降频、或硬件问题"
-        fi
-        
-        if [ $write_diff -gt 1500 ]; then
-            log_success "🎉 写入速度超出标准 ${write_percent}%！"
-        elif [ $write_diff -gt 0 ]; then
-            log_success "✅ 写入速度符合标准 (+${write_percent}%)"
-        elif [ $write_diff -gt -1500 ]; then
-            log_warn "⚠️  写入速度略低于标准 (${write_percent}%)"
-        else
-            log_warn "⚠️  写入速度明显低于标准 (${write_percent}%)"
-        fi
-        
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        
-        # 保存标准值供评分系统使用
-        PERFORMANCE_DATA[mem_expected_read]=$expected_read
-        PERFORMANCE_DATA[mem_expected_write]=$expected_write
-        PERFORMANCE_DATA[mem_found_in_db]="yes"
-    else
-        # 未找到，使用固定基准
-        PERFORMANCE_DATA[mem_expected_read]=16000
-        PERFORMANCE_DATA[mem_expected_write]=12000
-        PERFORMANCE_DATA[mem_found_in_db]="no"
-    fi
-}
-
-# 磁盘性能数据库对比（基于标准硬件规格）
-compare_disk_with_database() {
-    local disk_type="${SYSTEM_INFO[disk_type]}"
-    local seq_read=$(echo "${PERFORMANCE_DATA[disk_seq_read]}" | cut -d'.' -f1)
-    local rand_read=$(echo "${PERFORMANCE_DATA[disk_rand_read_iops]}" | cut -d'.' -f1)
-    local is_virt="${SYSTEM_INFO[is_virtualized]:-否}"
-    
-    # 磁盘性能数据库（数据来源：厂商规格 + 实测数据）
-    # 格式：磁盘类型|典型顺序读(MB/s)|典型4K读IOPS|DiskMark分|说明
-    local disk_database=(
-        # NVMe SSD（高端）
-        "NVMe PCIe 4.0|7000|600000|15000|旗舰级NVMe SSD（Gen4）"
-        "NVMe PCIe 3.0|3500|400000|12000|主流NVMe SSD（Gen3）"
-        "NVMe入门|2000|250000|9000|入门级NVMe SSD"
-        
-        # SATA SSD
-        "SATA SSD企业级|550|90000|7500|企业级SATA SSD"
-        "SATA SSD消费级|550|75000|6500|消费级SATA SSD"
-        
-        # 机械硬盘
-        "15K RPM SAS|280|250|2800|15000转企业级SAS硬盘"
-        "10K RPM SAS|200|180|2200|10000转企业级SAS硬盘"
-        "7200 RPM SAS|180|130|1800|7200转企业级SAS硬盘"
-        "7200 RPM SATA|150|100|1500|7200转SATA硬盘"
-        "5400 RPM|120|80|1200|5400转硬盘（笔记本/低功耗）"
-        
-        # 虚拟化磁盘（特殊情况）
-        "虚拟化HDD|2000|100|1000|虚拟化环境HDD（宿主机SSD）"
-        "虚拟化SSD|1500|5000|4000|虚拟化环境SSD（受限）"
-    )
-    
-    local found=0
-    local matched_type=""
-    local expected_seq=0
-    local expected_iops=0
-    local diskmark_score=0
-    local disk_desc=""
-    
-    # 特殊处理虚拟化环境
-    if [ "$is_virt" != "否" ] && [ "$disk_type" = "HDD" ]; then
-        if [ $seq_read -gt 500 ] && [ $rand_read -lt 1000 ]; then
-            matched_type="虚拟化HDD"
-            expected_seq=2000
-            expected_iops=100
-            diskmark_score=1000
-            disk_desc="虚拟化环境HDD（宿主机SSD，虚拟盘IOPS受限）"
-            found=1
-        fi
-    fi
-    
-    # 如果不是虚拟化特殊情况，按IOPS匹配
-    if [ $found -eq 0 ]; then
-        local best_match_diff=999999
-        for entry in "${disk_database[@]}"; do
-            IFS='|' read -r type exp_seq exp_iops dm_sc desc <<< "$entry"
-            
-            # 跳过虚拟化类型（已特殊处理）
-            if [[ "$type" == "虚拟化"* ]]; then
-                continue
-            fi
-            
-            local diff=$((rand_read - exp_iops))
-            [ $diff -lt 0 ] && diff=$((-diff))
-            
-            if [ $diff -lt $best_match_diff ]; then
-                best_match_diff=$diff
-                matched_type="$type"
-                expected_seq=$exp_seq
-                expected_iops=$exp_iops
-                diskmark_score=$dm_sc
-                disk_desc="$desc"
-                found=1
-            fi
-        done
-    fi
-    
-    if [ $found -eq 1 ]; then
-        echo ""
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        log_info "📊 与权威数据库对比（数据来源：厂商规格 + 实测）"
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        log_info "识别磁盘: $disk_desc"
-        log_info "匹配规格: $matched_type"
-        echo ""
-        log_info "性能对比："
-        log_info "  您的顺序读取: $seq_read MB/s"
-        log_info "  标准顺序读取: $expected_seq MB/s"
-        log_info "  您的4K读IOPS: $rand_read IOPS ⭐关键指标"
-        log_info "  标准4K读IOPS: $expected_iops IOPS"
-        log_info "  DiskMark参考分: $diskmark_score"
-        
-        # 计算IOPS性能差异（关键指标）
-        local iops_diff=$((rand_read - expected_iops))
-        local iops_percent=$(echo "scale=1; $iops_diff * 100 / $expected_iops" | bc 2>/dev/null || echo "0")
-        
-        echo ""
-        if [ "$is_virt" != "否" ]; then
-            log_info "虚拟化环境说明："
-            log_info "  顺序速度 ${seq_read} MB/s 来自宿主机SSD"
-            log_info "  4K IOPS ${rand_read} 才是虚拟磁盘的真实性能"
-            echo ""
-        fi
-        
-        if [ $iops_diff -gt 50 ]; then
-            log_success "🎉 4K IOPS超出标准 ${iops_percent}%！"
-        elif [ $iops_diff -gt 0 ]; then
-            log_success "✅ 4K IOPS符合标准 (+${iops_percent}%)"
-        elif [ $iops_diff -gt -30 ]; then
-            log_warn "⚠️  4K IOPS略低于标准 (${iops_percent}%)"
-            log_info "可能原因：磁盘繁忙、虚拟化性能损耗、或磁盘老化"
-        else
-            log_warn "⚠️  4K IOPS明显低于标准 (${iops_percent}%)"
-            log_warn "建议检查："
-            log_warn "  • 磁盘是否过于繁忙 (iostat -x)"
-            log_warn "  • 是否虚拟化IO限制过严"
-            log_warn "  • 考虑升级到SSD获得更好性能"
-        fi
-        
-        log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        
-        # 保存标准值供评分系统使用
-        PERFORMANCE_DATA[disk_expected_seq]=$expected_seq
-        PERFORMANCE_DATA[disk_expected_iops]=$expected_iops
-        PERFORMANCE_DATA[disk_found_in_db]="yes"
-    else
-        # 未找到，使用固定基准
-        if [ "$disk_type" = "SSD" ]; then
-            PERFORMANCE_DATA[disk_expected_seq]=500
-            PERFORMANCE_DATA[disk_expected_iops]=75000
-        else
-            PERFORMANCE_DATA[disk_expected_seq]=150
-            PERFORMANCE_DATA[disk_expected_iops]=100
-        fi
-        PERFORMANCE_DATA[disk_found_in_db]="no"
-    fi
-}
-
-# 深度CPU性能测试
 deep_cpu_benchmark() {
-    log_header "CPU深度性能测试（使用Sysbench + Stress-ng）"
+    log_header "CPU性能测试（Sysbench）"
     
     # 基础信息
     SYSTEM_INFO[cpu_cores]=$(nproc)
-    SYSTEM_INFO[cpu_threads]=$(grep -c ^processor /proc/cpuinfo)
     SYSTEM_INFO[cpu_model]=$(grep "model name" /proc/cpuinfo | head -n1 | cut -d':' -f2 | xargs)
     
-    log_info "CPU型号: ${SYSTEM_INFO[cpu_model]}"
-    log_info "物理核心数: ${SYSTEM_INFO[cpu_cores]}"
-    log_info "逻辑线程数: ${SYSTEM_INFO[cpu_threads]}"
-    
-    # CPU缓存信息
-    if [ -f /sys/devices/system/cpu/cpu0/cache/index0/size ]; then
-        local l1_cache=$(cat /sys/devices/system/cpu/cpu0/cache/index0/size 2>/dev/null)
-        local l2_cache=$(cat /sys/devices/system/cpu/cpu0/cache/index2/size 2>/dev/null)
-        local l3_cache=$(cat /sys/devices/system/cpu/cpu0/cache/index3/size 2>/dev/null)
-        log_info "L1缓存: ${l1_cache:-未知}"
-        log_info "L2缓存: ${l2_cache:-未知}"
-        log_info "L3缓存: ${l3_cache:-未知}"
-    fi
-    
-    # CPU频率（获取实际运行频率和最大频率）
-    local cpu_cur_freq=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq 2>/dev/null)
+    # CPU频率
     local cpu_max_freq=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null)
-    
     if [ ! -z "$cpu_max_freq" ]; then
         cpu_max_freq=$((cpu_max_freq / 1000))
         SYSTEM_INFO[cpu_max_freq]=$cpu_max_freq
-        log_info "CPU最大频率: ${cpu_max_freq} MHz"
     else
         cpu_max_freq=$(grep "cpu MHz" /proc/cpuinfo | head -n1 | cut -d':' -f2 | xargs | cut -d'.' -f1)
         SYSTEM_INFO[cpu_max_freq]=${cpu_max_freq:-2000}
-        log_info "CPU频率: ${cpu_max_freq} MHz"
     fi
     
-    # Sysbench CPU测试 - 单线程性能
+    log_info "CPU: ${SYSTEM_INFO[cpu_model]}"
+    log_info "核心数: ${SYSTEM_INFO[cpu_cores]}, 频率: ${cpu_max_freq} MHz"
+    
+    # Sysbench CPU单线程测试（优化算法关键指标）
     # 使用5秒 + 10000素数，与spiritLHLS/ecs项目对标
     log_progress "执行Sysbench单线程CPU测试（5秒，素数10000）..."
     local cpu_single_score=$(sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
     PERFORMANCE_DATA[cpu_single_thread]=${cpu_single_score:-0}
-    log_success "单线程性能分数: ${cpu_single_score} events/sec ⭐对标ecs"
-    
-    # Sysbench CPU测试 - 多线程性能（仅多核时测试）
-    if [ ${SYSTEM_INFO[cpu_cores]} -gt 1 ]; then
-        log_progress "执行Sysbench多线程CPU测试（5秒）..."
-        local cpu_multi_score=$(sysbench cpu --cpu-max-prime=10000 --threads=${SYSTEM_INFO[cpu_cores]} --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
-        PERFORMANCE_DATA[cpu_multi_thread]=${cpu_multi_score:-0}
-        log_success "多线程性能分数: ${cpu_multi_score} events/sec"
-    else
-        # 单核CPU，多线程测试无意义
-        PERFORMANCE_DATA[cpu_multi_thread]=${cpu_single_score:-0}
-        log_info "单核CPU，跳过多线程测试"
-    fi
-    
-    # Stress-ng CPU整数运算测试
-    log_progress "执行Stress-ng整数运算测试（5秒）..."
-    local int_ops=$(stress-ng --cpu ${SYSTEM_INFO[cpu_cores]} --cpu-method int64 --metrics-brief --timeout 5s 2>&1 | grep "cpu " | awk '{print $9}')
-    PERFORMANCE_DATA[cpu_int_ops]=${int_ops:-0}
-    log_success "整数运算能力: ${int_ops} bogo ops/sec"
-    
-    # Stress-ng CPU浮点运算测试
-    log_progress "执行Stress-ng浮点运算测试（5秒）..."
-    local float_ops=$(stress-ng --cpu ${SYSTEM_INFO[cpu_cores]} --cpu-method double --metrics-brief --timeout 5s 2>&1 | grep "cpu " | awk '{print $9}')
-    PERFORMANCE_DATA[cpu_float_ops]=${float_ops:-0}
-    log_success "浮点运算能力: ${float_ops} bogo ops/sec"
-    
-    # 计算CPU性能分数（对标 spiritLHLS/ecs 项目标准）
-    # 使用Sysbench原始分数（events/sec）作为评分标准
-    # 参考：https://github.com/spiritLHLS/ecs
-    # 
-    # Sysbench CPU 评分参考值（单线程 @5sec, 10000素数）：
-    #   低端VPS/老旧CPU:      200-500 Scores
-    #   入门服务器:           500-800 Scores
-    #   主流服务器:           800-1200 Scores
-    #   中高端服务器:         1200-1800 Scores
-    #   高端服务器:           1800-2500 Scores
-    #   顶级服务器:           2500+ Scores
-    
-    # 确保变量有默认值（避免bc语法错误）
-    cpu_single_score=${cpu_single_score:-0}
-    cpu_multi_score=${PERFORMANCE_DATA[cpu_multi_thread]:-${cpu_single_score}}
-    int_ops=${int_ops:-0}
-    float_ops=${float_ops:-0}
-    
-    # 保存到全局变量
-    PERFORMANCE_DATA[cpu_single_score]=$cpu_single_score
-    PERFORMANCE_DATA[cpu_multi_score]=$cpu_multi_score
-    
-    # 计算综合评分（0-100标准化，反映在当前服务器市场中的绝对水平）
-    # 评分标准：
-    #   90-100分：顶级服务器（2021+年新一代至强/EPYC）
-    #   70-90分：高端服务器（2019-2020年至强Gold/EPYC）
-    #   50-70分：主流服务器（2017-2018年至强Gold/E5 v4高端）
-    #   30-50分：入门服务器（2014-2016年E5 v3/v4）
-    #   10-30分：老旧服务器（2012-2013年E5 v2及更早）
-    #   <10分：淘汰级硬件
-    
-    # 权重：单线程40%，多线程40%，整数10%，浮点10%
-    local single_weight=0.40
-    local multi_weight=0.40
-    local int_weight=0.10
-    local float_weight=0.10
-    
-    # 定义当前服务器市场的基准（2024年标准）
-    # 100分基准：Intel Xeon Gold 6240 / AMD EPYC 7742 级别
-    # 基准数据来源：spiritLHLS/ecs项目社区数据 + PassMark验证
-    local market_baseline_single=1300   # 顶级服务器单线程性能 (sysbench 5s, prime 10000)
-    local market_baseline_multi_per_core=1200  # 多核扩展效率（考虑超线程和缓存竞争）
-    local market_baseline_int=2100      # 整数运算基准 (stress-ng bogo ops/s, 修正)
-    local market_baseline_float=1800    # 浮点运算基准 (stress-ng bogo ops/s, 修正)
-    
-    # 标准化（基于当前服务器市场水平）
-    local single_norm=$(echo "scale=4; ${cpu_single_score:-0} / $market_baseline_single" | bc -l)
-    
-    # 多线程：考虑核心数和多核扩展效率
-    local expected_multi_market=$(echo "scale=0; $market_baseline_multi_per_core * ${SYSTEM_INFO[cpu_cores]}" | bc)
-    local multi_norm=$(echo "scale=4; ${cpu_multi_score:-0} / $expected_multi_market" | bc -l)
-    
-    # 整数运算标准化
-    local int_norm=$(echo "scale=4; ${int_ops:-0} / $market_baseline_int" | bc -l)
-    
-    # 浮点运算标准化
-    local float_norm=$(echo "scale=4; ${float_ops:-0} / $market_baseline_float" | bc -l)
-    
-    # 计算0-100标准化分数
-    local normalized_score=$(echo "scale=2; ($single_norm * $single_weight + $multi_norm * $multi_weight + $int_norm * $int_weight + $float_norm * $float_weight) * 100" | bc -l 2>/dev/null || echo "5.00")
-    
-    # 确保分数有效
-    if [ -z "$normalized_score" ] || [ "$normalized_score" = "0" ]; then
-        normalized_score=5.00
-    fi
-    
-    # 限制范围 0-100
-    local score_check=$(echo "$normalized_score > 100" | bc -l 2>/dev/null || echo "0")
-    if [ "$score_check" = "1" ]; then
-        normalized_score=100.00
-    fi
-    
-    local score_check_low=$(echo "$normalized_score < 1" | bc -l 2>/dev/null || echo "0")
-    if [ "$score_check_low" = "1" ]; then
-        normalized_score=5.00
-    fi
-    
-    PERFORMANCE_DATA[cpu_score]=$normalized_score
-    
-    # 存储整数和浮点分数供参考
-    PERFORMANCE_DATA[cpu_int_ops]=$int_ops
-    PERFORMANCE_DATA[cpu_float_ops]=$float_ops
-    
-    # 确保分数在合理范围内
-    local cpu_score_int=$(echo "${PERFORMANCE_DATA[cpu_score]}" | cut -d'.' -f1)
-    if [ -z "$cpu_score_int" ] || [ $cpu_score_int -lt 1 ]; then
-        PERFORMANCE_DATA[cpu_score]=5.00
-        PERFORMANCE_DATA[cpu_passmark_rating]=1250
-    elif [ $cpu_score_int -gt 100 ]; then
-        PERFORMANCE_DATA[cpu_score]=100.00
-        PERFORMANCE_DATA[cpu_passmark_rating]=25000
-    fi
-    
-    log_success "CPU综合性能评分: ${PERFORMANCE_DATA[cpu_score]}/100"
-    echo ""
-    log_info "📊 评分说明：反映在当前服务器市场中的绝对水平"
-    log_info "   90-100分：顶级服务器（2021+新一代至强/EPYC）"
-    log_info "   70-90分： 高端服务器（2019-2020年至强Gold/EPYC）"
-    log_info "   50-70分： 主流服务器（2017-2018年至强Gold）"
-    log_info "   30-50分： 入门服务器（2014-2016年E5 v3/v4）"
-    log_info "   <30分：  老旧/淘汰级服务器"
-    echo ""
-    log_info "Sysbench单线程: ${PERFORMANCE_DATA[cpu_single_thread]} Scores (对标ecs)"
-    if [ ${SYSTEM_INFO[cpu_cores]} -gt 1 ]; then
-        log_info "Sysbench多线程: ${PERFORMANCE_DATA[cpu_multi_thread]} Scores"
-    fi
-    
-    # 与权威数据库对比
-    compare_with_database
-    
-    # 给出性能等级评价
-    local cpu_single_score=$(echo "${PERFORMANCE_DATA[cpu_single_thread]}" | cut -d'.' -f1)
-    
-    if [ $cpu_single_score -lt 500 ]; then
-        log_warn "性能等级: 低端VPS/老旧CPU (<500)"
-    elif [ $cpu_single_score -lt 800 ]; then
-        log_info "性能等级: 入门服务器 (500-800)"
-    elif [ $cpu_single_score -lt 1200 ]; then
-        log_info "性能等级: 主流服务器 (800-1200)"
-    elif [ $cpu_single_score -lt 1800 ]; then
-        log_info "性能等级: 中高端服务器 (1200-1800)"
-    elif [ $cpu_single_score -lt 2500 ]; then
-        log_info "性能等级: 高端服务器 (1800-2500)"
-    else
-        log_info "性能等级: 顶级服务器 (2500+)"
-    fi
+    log_success "CPU性能: ${cpu_single_score} events/sec ⭐优化算法关键指标"
 }
 
 # 深度内存性能测试
 deep_memory_benchmark() {
-    log_header "内存深度性能测试（使用Sysbench + Stress-ng）"
+    log_header "内存性能测试（Sysbench）"
     
     # 基础内存信息
     SYSTEM_INFO[total_ram_kb]=$(grep MemTotal /proc/meminfo | awk '{print $2}')
@@ -813,162 +256,40 @@ deep_memory_benchmark() {
         [ ! -z "$mem_manufacturer" ] && log_info "内存制造商: ${mem_manufacturer}"
     fi
     
-    # Sysbench内存顺序读写测试
-    log_progress "执行Sysbench内存顺序读取测试..."
+    # Sysbench内存读取带宽测试（优化算法关键指标）
+    log_progress "执行Sysbench内存读取带宽测试..."
     local mem_read=$(sysbench memory --memory-block-size=1M --memory-total-size=10G --memory-oper=read --threads=${SYSTEM_INFO[cpu_cores]} run 2>/dev/null | grep "transferred" | awk '{print $(NF-1)}' | tr -d '()')
-    PERFORMANCE_DATA[mem_read_speed]=${mem_read:-0}
-    log_success "内存读取速度: ${mem_read} MiB/sec"
     
-    log_progress "执行Sysbench内存顺序写入测试..."
-    local mem_write=$(sysbench memory --memory-block-size=1M --memory-total-size=10G --memory-oper=write --threads=${SYSTEM_INFO[cpu_cores]} run 2>/dev/null | grep "transferred" | awk '{print $(NF-1)}' | tr -d '()')
-    PERFORMANCE_DATA[mem_write_speed]=${mem_write:-0}
-    log_success "内存写入速度: ${mem_write} MiB/sec"
-    
-    # Sysbench内存随机访问测试
-    log_progress "执行Sysbench内存随机访问测试..."
-    local mem_random=$(sysbench memory --memory-block-size=4K --memory-total-size=1G --memory-access-mode=rnd --threads=${SYSTEM_INFO[cpu_cores]} run 2>/dev/null | grep "transferred" | awk '{print $(NF-1)}' | tr -d '()')
-    PERFORMANCE_DATA[mem_random_speed]=${mem_random:-0}
-    log_success "内存随机访问速度: ${mem_random} MiB/sec"
-    
-    # Stress-ng内存压力测试（测试内存稳定性和真实带宽）
-    log_progress "执行Stress-ng内存带宽测试..."
-    local mem_bandwidth=$(stress-ng --vm ${SYSTEM_INFO[cpu_cores]} --vm-bytes 80% --vm-method all --metrics-brief --timeout 5s 2>&1 | grep "vm " | awk '{print $9}')
-    PERFORMANCE_DATA[mem_bandwidth]=${mem_bandwidth:-0}
-    log_success "内存带宽测试: ${mem_bandwidth} bogo ops/sec"
-    
-    # 计算综合内存性能分数（对标SPEC/STREAM和服务器内存标准）
-    # 服务器ECC内存带宽标准参考值（JEDEC标准）：
-    # 注意：ECC内存因为额外的错误校验，性能略低于非ECC内存（约5-10%）
-    # 
-    # 服务器DDR3 ECC:
-    #   DDR3-1333 ECC: ~10,600 MB/s (理论)  实际: ~7,500-9,000 MB/s
-    #   DDR3-1600 ECC: ~12,800 MB/s (理论)  实际: ~9,000-10,500 MB/s
-    #   DDR3-1866 ECC: ~14,900 MB/s (理论)  实际: ~10,500-12,000 MB/s
-    # 
-    # 服务器DDR4 ECC (主流):
-    #   DDR4-2133 ECC: ~17,000 MB/s (理论)  实际: ~13,000-15,000 MB/s ⭐ 入门服务器
-    #   DDR4-2400 ECC: ~19,200 MB/s (理论)  实际: ~15,000-17,000 MB/s ⭐ 主流服务器
-    #   DDR4-2666 ECC: ~21,300 MB/s (理论)  实际: ~17,000-19,500 MB/s ⭐ 中高端服务器
-    #   DDR4-2933 ECC: ~23,500 MB/s (理论)  实际: ~19,000-21,500 MB/s
-    #   DDR4-3200 ECC: ~25,600 MB/s (理论)  实际: ~20,000-23,000 MB/s ⭐ 高端服务器
-    # 
-    # 服务器DDR5 ECC (新一代):
-    #   DDR5-4800 ECC: ~38,400 MB/s (理论)  实际: ~30,000-35,000 MB/s ⭐ 最新服务器
-    #   DDR5-5600 ECC: ~44,800 MB/s (理论)  实际: ~35,000-42,000 MB/s
-    # 
-    # PassMark服务器内存评分参考：
-    # 入门服务器内存 (DDR3 ECC):          1,000-1,800分
-    # 主流服务器内存 (DDR4-2133/2400 ECC): 1,800-2,800分
-    # 中高端服务器内存 (DDR4-2666 ECC):    2,800-3,500分
-    # 高端服务器内存 (DDR4-3200 ECC):      3,500-4,500分
-    # 顶级服务器内存 (DDR5 ECC):           5,000-7,000+分
-    
-    # 权重分配（基于SPEC标准和服务器工作负载）
-    # 注意：权重总和必须为1.0
-    local read_weight=0.40    # 服务器读操作更多 (40%)
-    local write_weight=0.30   # 写操作次之 (30%)
-    local random_weight=0.30  # 随机访问对数据库等应用很重要 (30%)
-    
-    # 定义当前服务器市场的内存基准（2024年标准）
-    # 评分标准：反映在当前服务器市场中的绝对水平
-    #   90-100分：顶级服务器内存（DDR5-4800+ ECC）
-    #   70-90分：高端服务器内存（DDR4-3200 ECC）
-    #   50-70分：主流服务器内存（DDR4-2666/2400 ECC）
-    #   30-50分：入门服务器内存（DDR4-2133/DDR3-1866 ECC）
-    #   <30分：老旧/淘汰级内存
-    
-    # 100分基准：DDR5-4800 ECC级别
-    local baseline_read=38000   # 顶级服务器内存读取
-    local baseline_write=25000  # 顶级服务器内存写入
-    local baseline_random=8000  # 随机访问（辅助参考）
-    
-    # 清理并验证数值（去除非数字字符，确保有效）
+    # 清理数值
     mem_read=$(echo "$mem_read" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    mem_write=$(echo "$mem_write" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
-    mem_random=$(echo "$mem_random" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
+    mem_read=${mem_read:-10000}
     
-    # 如果为空，设置默认值
-    mem_read=${mem_read:-1000}
-    mem_write=${mem_write:-800}
-    mem_random=${mem_random:-500}
-    
-    local read_norm=$(echo "scale=4; ${mem_read} / $baseline_read" | bc 2>/dev/null || echo "0.05")
-    local write_norm=$(echo "scale=4; ${mem_write} / $baseline_write" | bc 2>/dev/null || echo "0.05")
-    local random_norm=$(echo "scale=4; ${mem_random} / $baseline_random" | bc 2>/dev/null || echo "0.05")
-    
-    # 计算原始性能分数
-    local raw_mem_score=$(echo "scale=4; $read_norm * $read_weight + $write_norm * $write_weight + $random_norm * $random_weight" | bc)
-    
-    # 映射到0-100标准分数
-    PERFORMANCE_DATA[mem_score]=$(echo "scale=2; $raw_mem_score * 100" | bc)
-    
-    # 存储原始测试结果（spiritLHLS/ecs + Lemonbench格式）
+    # 存储读取带宽（优化算法唯一使用的内存指标）
     PERFORMANCE_DATA[mem_read_bandwidth]=$mem_read
-    PERFORMANCE_DATA[mem_write_bandwidth]=$mem_write
     
-    # 根据实际带宽判断服务器内存类型（考虑ECC内存特性）
-    local avg_bandwidth=$(echo "scale=0; ($mem_read + $mem_write) / 2" | bc)
-    if (( $(echo "$avg_bandwidth < 10000" | bc -l) )); then
-        SYSTEM_INFO[mem_category]="DDR3-1333/1600 ECC (老旧服务器)"
-    elif (( $(echo "$avg_bandwidth < 14000" | bc -l) )); then
-        SYSTEM_INFO[mem_category]="DDR3-1866 ECC 或 DDR4-2133 ECC (入门服务器)"
-    elif (( $(echo "$avg_bandwidth < 16500" | bc -l) )); then
-        SYSTEM_INFO[mem_category]="DDR4-2400 ECC (主流服务器)" 
-    elif (( $(echo "$avg_bandwidth < 19500" | bc -l) )); then
-        SYSTEM_INFO[mem_category]="DDR4-2666 ECC (中高端服务器)"
-    elif (( $(echo "$avg_bandwidth < 23500" | bc -l) )); then
-        SYSTEM_INFO[mem_category]="DDR4-3200 ECC (高端服务器)"
-    elif (( $(echo "$avg_bandwidth < 33000" | bc -l) )); then
-        SYSTEM_INFO[mem_category]="高频DDR4 ECC 或 DDR5-4800 ECC"
+    # 根据读取带宽判断内存类型
+    if (( $(echo "$mem_read < 10000" | bc -l) )); then
+        SYSTEM_INFO[mem_category]="DDR3-1333/1600 ECC"
+    elif (( $(echo "$mem_read < 14000" | bc -l) )); then
+        SYSTEM_INFO[mem_category]="DDR3-1866/DDR4-2133 ECC"
+    elif (( $(echo "$mem_read < 17000" | bc -l) )); then
+        SYSTEM_INFO[mem_category]="DDR4-2400 ECC" 
+    elif (( $(echo "$mem_read < 20000" | bc -l) )); then
+        SYSTEM_INFO[mem_category]="DDR4-2666 ECC"
+    elif (( $(echo "$mem_read < 25000" | bc -l) )); then
+        SYSTEM_INFO[mem_category]="DDR4-3200 ECC"
+    elif (( $(echo "$mem_read < 35000" | bc -l) )); then
+        SYSTEM_INFO[mem_category]="DDR5-4800 ECC"
     else
-        SYSTEM_INFO[mem_category]="DDR5-5600+ ECC (最新一代服务器)"
+        SYSTEM_INFO[mem_category]="DDR5-5600+ ECC"
     fi
     
-    # 确保分数在合理范围内
-    local mem_score_int=$(echo "${PERFORMANCE_DATA[mem_score]}" | cut -d'.' -f1)
-    if [ -z "$mem_score_int" ] || [ $mem_score_int -lt 1 ]; then
-        PERFORMANCE_DATA[mem_score]=5.00
-        PERFORMANCE_DATA[mem_passmark_rating]=500
-    elif [ $mem_score_int -gt 100 ]; then
-        PERFORMANCE_DATA[mem_score]=100.00
-        PERFORMANCE_DATA[mem_passmark_rating]=7000
-    fi
-    
-    log_success "内存综合性能评分: ${PERFORMANCE_DATA[mem_score]}/100"
-    echo ""
-    log_info "📊 评分说明：反映在当前服务器市场中的绝对水平"
-    log_info "   90-100分：顶级服务器内存（DDR5-4800+ ECC）"
-    log_info "   70-90分： 高端服务器内存（DDR4-3200 ECC）"
-    log_info "   50-70分： 主流服务器内存（DDR4-2666/2400 ECC）"
-    log_info "   30-50分： 入门服务器内存（DDR4-2133/DDR3 ECC）"
-    log_info "   <30分：  老旧/淘汰级内存"
-    echo ""
-    log_info "读取/写入: ${PERFORMANCE_DATA[mem_read_bandwidth]}/${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s"
-    log_info "识别等级: ${SYSTEM_INFO[mem_category]:-未识别}"
-    
-    # 与权威数据库对比
-    compare_memory_with_database
-    
-    # 给出性能等级评价（基于读取带宽）
-    local mem_read_int=$(echo "${PERFORMANCE_DATA[mem_read_bandwidth]}" | cut -d'.' -f1)
-    if [ $mem_read_int -lt 11000 ]; then
-        log_warn "性能等级: 低端内存 (DDR3)"
-    elif [ $mem_read_int -lt 15000 ]; then
-        log_info "性能等级: 入门服务器 (DDR3-1866 / DDR4-2133)"
-    elif [ $mem_read_int -lt 17000 ]; then
-        log_info "性能等级: 主流服务器 (DDR4-2400)"
-    elif [ $mem_read_int -lt 20000 ]; then
-        log_info "性能等级: 中高端服务器 (DDR4-2666)"
-    elif [ $mem_read_int -lt 25000 ]; then
-        log_info "性能等级: 高端服务器 (DDR4-3200)"
-    else
-        log_info "性能等级: 顶级服务器 (DDR5-4800+)"
-    fi
+    log_success "内存性能测试完成 - ${mem_read} MB/s ⭐优化算法关键指标"
 }
 
 # 专业级磁盘性能测试（使用FIO）
 deep_disk_benchmark() {
-    log_header "磁盘深度性能测试（使用FIO专业工具）"
+    log_header "磁盘性能测试（FIO）"
     
     # 获取根分区磁盘设备
     local root_mount=$(df / | tail -1 | awk '{print $1}')
@@ -1013,7 +334,6 @@ deep_disk_benchmark() {
     mkdir -p $test_dir
     
     log_info "测试目录: ${test_dir}"
-    log_warn "FIO测试将执行约60秒，请耐心等待..."
     
     # FIO测试1: 顺序读取 (Sequential Read)
     log_progress "执行FIO顺序读取测试（4MB块大小）..."
@@ -1054,41 +374,6 @@ deep_disk_benchmark() {
     fi
     log_success "顺序读取速度: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
     
-    # FIO测试2: 顺序写入 (Sequential Write)
-    log_progress "执行FIO顺序写入测试（4MB块大小）..."
-    fio --name=seq_write \
-        --directory=$test_dir \
-        --rw=write \
-        --bs=4m \
-        --size=512m \
-        --numjobs=1 \
-        --time_based \
-        --runtime=10 \
-        --ioengine=libaio \
-        --direct=1 \
-        --group_reporting \
-        --output-format=json \
-        > /tmp/fio_seq_write.json 2>/dev/null
-    
-    local seq_write_bw=$(grep -oP '"bw"\s*:\s*\K[0-9]+' /tmp/fio_seq_write.json 2>/dev/null | head -1)
-    if [ -z "$seq_write_bw" ] || [ "$seq_write_bw" = "0" ]; then
-        seq_write_bw=$(fio --name=seq_write --directory=$test_dir --rw=write --bs=4m --size=256m --numjobs=1 --runtime=5 --ioengine=sync --direct=1 2>/dev/null | grep "WRITE:" | grep -oP 'bw=\K[0-9.]+[KMG]' | head -1)
-        if [[ $seq_write_bw =~ ([0-9.]+)([KMG]) ]]; then
-            local value="${BASH_REMATCH[1]}"
-            local unit="${BASH_REMATCH[2]}"
-            case $unit in
-                K) seq_write_bw=$(echo "scale=2; $value / 1024" | bc) ;;
-                M) seq_write_bw=$(echo "scale=2; $value" | bc) ;;
-                G) seq_write_bw=$(echo "scale=2; $value * 1024" | bc) ;;
-            esac
-        else
-            seq_write_bw=80
-        fi
-        PERFORMANCE_DATA[disk_seq_write]=$seq_write_bw
-    else
-        PERFORMANCE_DATA[disk_seq_write]=$(echo "scale=2; $seq_write_bw / 1024" | bc 2>/dev/null || echo "80")
-    fi
-    log_success "顺序写入速度: ${PERFORMANCE_DATA[disk_seq_write]} MB/s"
     
     # FIO测试3: 4K随机读取 (Random Read IOPS)
     log_progress "执行FIO 4K随机读取测试（IOPS）..."
@@ -1152,136 +437,14 @@ deep_disk_benchmark() {
     PERFORMANCE_DATA[disk_rand_write_iops]=${rand_write_iops:-80}
     log_success "4K随机写入IOPS: ${PERFORMANCE_DATA[disk_rand_write_iops]}"
     
-    # FIO测试5: 混合读写测试 (Mixed R/W 70/30)
-    log_progress "执行FIO混合读写测试（70%读/30%写）..."
-    fio --name=mixed_rw \
-        --directory=$test_dir \
-        --rw=randrw \
-        --rwmixread=70 \
-        --bs=4k \
-        --size=256m \
-        --numjobs=2 \
-        --time_based \
-        --runtime=10 \
-        --ioengine=libaio \
-        --iodepth=16 \
-        --direct=1 \
-        --group_reporting \
-        --output-format=json \
-        > /tmp/fio_mixed.json 2>/dev/null
-    
-    local mixed_iops=$(grep -oP '"iops"\s*:\s*\K[0-9.]+' /tmp/fio_mixed.json 2>/dev/null | head -1 | cut -d'.' -f1)
-    if [ -z "$mixed_iops" ] || [ "$mixed_iops" = "0" ]; then
-        mixed_iops=$(fio --name=mixed --directory=$test_dir --rw=randrw --rwmixread=70 --bs=4k --size=128m --numjobs=1 --runtime=5 --ioengine=sync --direct=1 2>/dev/null | grep "read :" | grep -oP 'IOPS=\K[0-9.]+[k]?' | head -1)
-        if [[ $mixed_iops =~ ([0-9.]+)k ]]; then
-            mixed_iops=$(echo "scale=0; ${BASH_REMATCH[1]} * 1000" | bc | cut -d'.' -f1)
-        elif [ ! -z "$mixed_iops" ]; then
-            mixed_iops=$(echo "$mixed_iops" | cut -d'.' -f1)
-        else
-            mixed_iops=90
-        fi
-    fi
-    PERFORMANCE_DATA[disk_mixed_iops]=${mixed_iops:-90}
-    log_success "混合读写IOPS: ${PERFORMANCE_DATA[disk_mixed_iops]}"
-    
-    # 磁盘延迟测试
-    log_progress "执行FIO延迟测试..."
-    fio --name=latency_test \
-        --directory=$test_dir \
-        --rw=randread \
-        --bs=4k \
-        --size=128m \
-        --numjobs=1 \
-        --time_based \
-        --runtime=10 \
-        --ioengine=libaio \
-        --iodepth=1 \
-        --direct=1 \
-        --output-format=json \
-        > /tmp/fio_latency.json 2>/dev/null
-    
-    local avg_latency=$(grep -oP '"lat_ns"\s*:\s*\{\s*"mean"\s*:\s*\K[0-9.]+' /tmp/fio_latency.json 2>/dev/null | head -1)
-    if [ -z "$avg_latency" ]; then
-        # 尝试从标准输出获取
-        avg_latency=$(fio --name=lat --directory=$test_dir --rw=randread --bs=4k --size=64m --numjobs=1 --runtime=5 --ioengine=sync --iodepth=1 --direct=1 2>/dev/null | grep "lat (usec)" | head -1 | grep -oP 'avg=\s*\K[0-9.]+')
-    fi
-    
-    if [ ! -z "$avg_latency" ] && [ "$avg_latency" != "0" ]; then
-        # 判断单位并转换
-        if (( $(echo "$avg_latency > 10000" | bc -l 2>/dev/null || echo 0) )); then
-            # 纳秒转微秒
-            PERFORMANCE_DATA[disk_latency]=$(echo "scale=2; $avg_latency / 1000" | bc 2>/dev/null || echo "5000")
-        else
-            # 已经是微秒
-            PERFORMANCE_DATA[disk_latency]=$avg_latency
-        fi
-        log_success "平均延迟: ${PERFORMANCE_DATA[disk_latency]} μs"
-    else
-        PERFORMANCE_DATA[disk_latency]="N/A"
-        log_success "平均延迟: N/A"
-    fi
     
     # 清理测试文件
     rm -rf $test_dir /tmp/fio_*.json
     
-    # 计算综合磁盘性能分数（对标PassMark DiskMark标准）
-    # PassMark DiskMark评分参考值：
-    # 
-    # HDD性能分级：
-    #   5400 RPM HDD:          50-100分    (顺序: 80-120 MB/s,  4K IOPS: 50-100)
-    #   7200 RPM HDD:          100-200分   (顺序: 120-180 MB/s, 4K IOPS: 80-150)
-    #   10000 RPM HDD:         200-400分   (顺序: 150-220 MB/s, 4K IOPS: 100-200)
-    # 
-    # SSD性能分级：
-    #   SATA2 SSD (3Gbps):     500-1,500分  (顺序: 250-280 MB/s,  4K IOPS: 5k-15k)
-    #   SATA3 SSD (6Gbps):     1,500-3,500分 (顺序: 450-550 MB/s,  4K IOPS: 30k-90k)
-    #   PCIe 2.0 NVMe:         3,500-8,000分 (顺序: 1000-2000 MB/s, 4K IOPS: 100k-300k)
-    #   PCIe 3.0 NVMe:         8,000-18,000分 (顺序: 2000-3500 MB/s, 4K IOPS: 200k-600k)
-    #   PCIe 4.0 NVMe:         18,000-35,000分 (顺序: 4000-7000 MB/s, 4K IOPS: 400k-1000k)
-    #   PCIe 5.0 NVMe:         35,000+分    (顺序: 10000+ MB/s,  4K IOPS: 1000k+)
+    # 存储磁盘性能测试结果
     
-    # 权重分配（虚拟内存优化专用：IOPS绝对主导）
-    # 原因：Swap页面交换完全依赖4K随机IOPS性能
-    # 优化：进一步提高IOPS权重，降低顺序带宽权重
-    local seq_read_weight=0.10    # 顺序读：次要（大文件加载）
-    local seq_write_weight=0.10   # 顺序写：次要（大文件保存）
-    local rand_read_weight=0.50   # 4K随机读：核心！Swap换入性能
-    local rand_write_weight=0.30  # 4K随机写：重要！脏页写回性能
-    
-    # 声明标准化变量（在分支外）
-    local seq_read_norm=0
-    local seq_write_norm=0
-    local rand_read_norm=0
-    local rand_write_norm=0
-    
+    # 判断服务器SSD类型（综合顺序速度和IOPS）
     if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        # 定义当前服务器市场的SSD基准（2024年标准）
-        # 评分标准：反映在当前服务器市场中的绝对水平
-        #   90-100分：顶级NVMe（PCIe 4.0 企业级）
-        #   70-90分：高端NVMe（PCIe 3.0 企业级）
-        #   50-70分：主流SSD（入门NVMe/高端SATA）
-        #   30-50分：入门SSD（SATA SSD）
-        #   <30分：老旧/低端SSD
-        
-        # 100分基准：PCIe 4.0 NVMe企业级
-        local baseline_seq_read=7000        # 顶级NVMe顺序读取
-        local baseline_seq_write=6000       # 顶级NVMe顺序写入
-        local baseline_rand_read_iops=600000   # 顶级NVMe 4K读IOPS
-        local baseline_rand_write_iops=400000  # 顶级NVMe 4K写IOPS
-        
-        # 确保数值有效
-        local disk_seq_read=${PERFORMANCE_DATA[disk_seq_read]:-100}
-        local disk_seq_write=${PERFORMANCE_DATA[disk_seq_write]:-80}
-        local disk_rand_read_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
-        local disk_rand_write_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-800}
-        
-        # 标准化计算（限制每项最大贡献，避免异常值）
-        local seq_read_norm=$(echo "scale=4; $disk_seq_read / $baseline_seq_read" | bc 2>/dev/null || echo "0.2")
-        local seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.18")
-        local rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.02")
-        local rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.02")
-        
-        # 判断服务器SSD类型（综合顺序速度和IOPS）
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
         local seq_read=${PERFORMANCE_DATA[disk_seq_read]:-100}
         
@@ -1293,50 +456,16 @@ deep_disk_benchmark() {
         elif (( $(echo "$seq_read > 3000" | bc -l) )) && (( $(echo "$disk_rand_read > 100000" | bc -l) )); then
             SYSTEM_INFO[disk_category]="PCIe 3.0 NVMe 企业级SSD"
         elif (( $(echo "$seq_read > 1500" | bc -l) )) && (( $(echo "$disk_rand_read > 50000" | bc -l) )); then
-            SYSTEM_INFO[disk_category]="入门NVMe或高端企业SATA SSD"
+            SYSTEM_INFO[disk_category]="NVMe 或 SATA3 企业级SSD"
         elif (( $(echo "$seq_read > 400" | bc -l) )) && (( $(echo "$disk_rand_read > 30000" | bc -l) )); then
-            SYSTEM_INFO[disk_category]="企业级SATA SSD"
+            SYSTEM_INFO[disk_category]="SATA3 企业级SSD"
         elif (( $(echo "$disk_rand_read > 10000" | bc -l) )); then
-            SYSTEM_INFO[disk_category]="消费级SATA SSD"
+            SYSTEM_INFO[disk_category]="SATA SSD"
         else
-            SYSTEM_INFO[disk_category]="低端SSD或虚拟化受限环境"
+            SYSTEM_INFO[disk_category]="SATA2 SSD或虚拟化受限环境"
         fi
         
     else
-        # 定义当前服务器市场的HDD基准（2024年标准）
-        # 关键原则：HDD评分必须基于IOPS，而非顺序速度
-        # 原因：虚拟化环境顺序速度可能虚高（来自宿主机SSD）
-        
-        # 评分策略：
-        #   1. 以IOPS为主要评分依据（权重70%）
-        #   2. 顺序速度仅作辅助（权重30%）
-        #   3. 虚拟化环境自动识别并特殊处理
-        
-        # HDD在整体存储市场中的定位：
-        #   40-60分：顶级HDD（15K RPM SAS）- 整体市场中低端
-        #   25-40分：主流HDD（10K/7200 RPM SAS）
-        #   10-25分：入门HDD（7200 RPM SATA）
-        #   <10分：淘汰级HDD（5400 RPM）
-        
-        # 100分基准：仍用顶级NVMe，让HDD自然落在低分区
-        # 这样能真实反映HDD在整体市场中的劣势
-        local baseline_seq_read=1000      # 用中等水平（让顺序速度权重降低）
-        local baseline_seq_write=900
-        local baseline_rand_read_iops=10000   # 用入门SSD级别作为满分（让HDD IOPS自然很低）
-        local baseline_rand_write_iops=8000
-        
-        # 确保数值有效
-        local disk_seq_read=${PERFORMANCE_DATA[disk_seq_read]:-100}
-        local disk_seq_write=${PERFORMANCE_DATA[disk_seq_write]:-80}
-        local disk_rand_read_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-80}
-        local disk_rand_write_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-70}
-        
-        # 标准化计算
-        seq_read_norm=$(echo "scale=4; $disk_seq_read / $baseline_seq_read" | bc 2>/dev/null || echo "0.67")
-        seq_write_norm=$(echo "scale=4; $disk_seq_write / $baseline_seq_write" | bc 2>/dev/null || echo "0.57")
-        rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.8")
-        rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.78")
-        
         # 判断服务器HDD类型（优先基于IOPS，而非顺序速度）
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
         local disk_seq=${PERFORMANCE_DATA[disk_seq_read]:-100}
@@ -1353,76 +482,7 @@ deep_disk_benchmark() {
         fi
         
     fi
-    
-    # 统一应用限制（在分支外，确保对所有类型生效）
-    echo ""
-    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    log_info "应用智能评分算法..."
-    
-    local disk_seq=${PERFORMANCE_DATA[disk_seq_read]:-100}
-    local disk_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
-    
-    # 虚拟化环境特殊处理
-    if [ "${SYSTEM_INFO[disk_type]}" = "HDD" ] && (( $(echo "$disk_seq > 500 && $disk_iops < 1000" | bc -l) )); then
-        # HDD虚拟化环境：严格限制顺序速度贡献
-        log_warn "⚠️ 虚拟化环境特征（顺序${disk_seq}MB/s vs IOPS ${disk_iops}）"
-        log_warn "评分算法：以IOPS为主，忽略虚高的顺序速度"
-        
-        # 极严格限制顺序速度贡献（虚拟化环境的顺序速度无意义）
-        seq_read_norm=0.70
-        seq_write_norm=0.70
-        
-        log_info "调整后: 顺序读贡献=${seq_read_norm}, 顺序写贡献=${seq_write_norm}"
-        
-    elif [ "${SYSTEM_INFO[disk_type]}" = "SSD" ] && (( $(echo "$disk_seq > 1000 && $disk_iops < 10000" | bc -l) )); then
-        # SSD虚拟化环境受限
-        log_warn "⚠️ SSD虚拟化环境检测：IOPS性能受限"
-        
-        # SSD限制较宽松
-        if (( $(echo "$seq_read_norm > 2.0" | bc -l) )); then
-            seq_read_norm=2.0
-        fi
-        if (( $(echo "$seq_write_norm > 2.0" | bc -l) )); then
-            seq_write_norm=2.0
-        fi
-        
-    else
-        # 物理环境或正常虚拟化的通用限制
-        if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-            # SSD最大限制
-            if (( $(echo "$seq_read_norm > 3.0" | bc -l) )); then
-                seq_read_norm=3.0
-            fi
-            if (( $(echo "$seq_write_norm > 3.0" | bc -l) )); then
-                seq_write_norm=3.0
-            fi
-            if (( $(echo "$rand_read_norm > 2.5" | bc -l) )); then
-                rand_read_norm=2.5
-            fi
-            if (( $(echo "$rand_write_norm > 2.5" | bc -l) )); then
-                rand_write_norm=2.5
-            fi
-        else
-            # HDD正常限制
-            if (( $(echo "$seq_read_norm > 1.5" | bc -l) )); then
-                seq_read_norm=1.5
-            fi
-            if (( $(echo "$seq_write_norm > 1.5" | bc -l) )); then
-                seq_write_norm=1.5
-            fi
-            if (( $(echo "$rand_read_norm > 1.5" | bc -l) )); then
-                rand_read_norm=1.5
-            fi
-            if (( $(echo "$rand_write_norm > 1.5" | bc -l) )); then
-                rand_write_norm=1.5
-            fi
-        fi
-    fi
-    
-    log_info "最终评分贡献: 顺序读=${seq_read_norm}, 顺序写=${seq_write_norm}"
-    log_info "               随机读=${rand_read_norm}, 随机写=${rand_write_norm}"
-    log_info "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
+
     
     # 设置虚拟化环境标记（增强检测）
     local is_virtualized=0
@@ -1471,102 +531,21 @@ deep_disk_benchmark() {
         SYSTEM_INFO[is_virtualized]="否"
     fi
     
-    # 计算原始性能分数（使用限制后的标准化值）
-    local raw_disk_score=$(echo "scale=4; $seq_read_norm * $seq_read_weight + $seq_write_norm * $seq_write_weight + $rand_read_norm * $rand_read_weight + $rand_write_norm * $rand_write_weight" | bc)
-    
-    log_info "原始分数计算: ${raw_disk_score} (限制后)"
-    
-    # 映射到0-100标准分数
-    PERFORMANCE_DATA[disk_score]=$(echo "scale=2; $raw_disk_score * 100" | bc)
-    
-    log_info "最终磁盘评分: ${PERFORMANCE_DATA[disk_score]}/100"
-    
-    # 确保分数在合理范围内
-    local disk_score_int=$(echo "${PERFORMANCE_DATA[disk_score]}" | cut -d'.' -f1)
-    if [ -z "$disk_score_int" ] || [ $disk_score_int -lt 1 ]; then
-        PERFORMANCE_DATA[disk_score]=5.00
-        if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-            PERFORMANCE_DATA[disk_passmark_rating]=500
-        else
-            PERFORMANCE_DATA[disk_passmark_rating]=50
-        fi
-    elif [ $disk_score_int -gt 100 ]; then
-        PERFORMANCE_DATA[disk_score]=100.00
-        if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-            PERFORMANCE_DATA[disk_passmark_rating]=35000
-        else
-            PERFORMANCE_DATA[disk_passmark_rating]=400
-        fi
-    fi
-    
-    log_success "磁盘综合性能评分: ${PERFORMANCE_DATA[disk_score]}/100"
+    log_success "磁盘性能测试完成"
     echo ""
-    if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        log_info "📊 评分说明：反映在当前存储市场中的绝对水平"
-        log_info "   90-100分：顶级NVMe（PCIe 4.0 企业级）"
-        log_info "   70-90分： 高端NVMe（PCIe 3.0 企业级）"
-        log_info "   50-70分： 主流SSD（入门NVMe/高端SATA）"
-        log_info "   30-50分： 入门SSD（SATA SSD）"
-        log_info "   <30分：  老旧/低端SSD"
-    else
-        log_info "📊 评分说明：反映在当前存储市场中的绝对水平"
-        log_info "   注意：HDD在当前市场中已是低端存储"
-        log_info "   40-60分：顶级HDD（15K RPM SAS）- 整体市场中低端"
-        log_info "   25-40分：主流HDD（10K/7200 RPM SAS）"
-        log_info "   10-25分：入门HDD（7200 RPM SATA）"
-        log_info "   <10分：  淘汰级HDD（5400 RPM）"
-    fi
+    log_info "📊 实测性能数据："
+    log_info "   顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
+    log_info "   4K随机读写IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]}/${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐关键指标"
+    log_info "   磁盘类型识别: ${SYSTEM_INFO[disk_category]:-未识别}"
     echo ""
-    log_info "顺序读/写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s"
-    log_info "4K IOPS 读/写: ${PERFORMANCE_DATA[disk_rand_read_iops]}/${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐关键指标"
-    log_info "识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
-    
-    # 与权威数据库对比
-    compare_disk_with_database
     
     # 显示虚拟化环境检测结果
     if [ "${SYSTEM_INFO[is_virtualized]}" != "否" ]; then
-        log_warn "虚拟化环境: ${SYSTEM_INFO[is_virtualized]}"
-        log_warn "${PERFORMANCE_DATA[disk_virt_warning]}"
-    fi
-    log_warn "  - 服务器环境应关注4K IOPS，而非顺序速度"
-    log_warn "  - 虚拟化环境的顺序速度仅供参考，IOPS才是真实性能"
-    echo ""
-    log_info "评分标准: FIO专业测试 + spiritLHLS/ecs参考 + 虚拟化环境智能识别"
-    
-    # 给出性能等级评价（基于4K随机读IOPS - 服务器最关键指标）
-    local iops_read=$(echo "${PERFORMANCE_DATA[disk_rand_read_iops]}" | cut -d'.' -f1)
-    if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        if [ $iops_read -lt 10000 ]; then
-            log_warn "性能等级: 低端/消费级SSD（不推荐服务器使用）"
-            log_warn "建议：更换为企业级SSD以保证可靠性"
-        elif [ $iops_read -lt 30000 ]; then
-            log_info "性能等级: 入门企业级SSD (SATA3)"
-            log_info "适用场景：Web服务、开发测试、小型数据库"
-        elif [ $iops_read -lt 100000 ]; then
-            log_info "性能等级: 主流企业级SSD (高端SATA或入门NVMe)"
-            log_info "适用场景：中型数据库、虚拟化、高并发Web"
-        elif [ $iops_read -lt 300000 ]; then
-            log_info "性能等级: 高性能企业级SSD (PCIe 3.0 NVMe)"
-            log_info "适用场景：大型数据库、高并发应用、实时分析"
-        else
-            log_info "性能等级: 顶级企业级SSD (PCIe 4.0 NVMe)"
-            log_info "适用场景：超高IOPS需求、内存数据库、AI训练"
+        log_warn "⚠️ 虚拟化环境检测: ${SYSTEM_INFO[is_virtualized]}"
+        if [ -n "${PERFORMANCE_DATA[disk_virt_warning]}" ]; then
+            log_warn "${PERFORMANCE_DATA[disk_virt_warning]}"
         fi
-    else
-        if [ $iops_read -lt 100 ]; then
-            log_warn "性能等级: 低速HDD (5400 RPM SATA，不推荐生产)"
-            log_warn "建议：升级到7200 RPM SAS或SSD"
-        elif [ $iops_read -lt 150 ]; then
-            log_info "性能等级: 标准HDD (7200 RPM SATA)"
-            log_info "适用场景：冷数据存储、归档、备份"
-        elif [ $iops_read -lt 250 ]; then
-            log_info "性能等级: 企业级HDD (7200 RPM SAS)"
-            log_info "适用场景：大容量存储、顺序读写为主的应用"
-        else
-            log_info "性能等级: 高性能HDD (10000/15000 RPM SAS)"
-            log_info "适用场景：高IOPS要求但预算有限的场景"
-        fi
+        log_info "虚拟内存优化将针对低IOPS特性进行调整"
     fi
 }
 
@@ -1576,17 +555,18 @@ calculate_optimal_swap_advanced() {
     
     local ram_mb=${SYSTEM_INFO[total_ram_mb]}
     local ram_gb=$(echo "scale=2; $ram_mb / 1024" | bc)
-    
-    # 获取性能分数
-    local cpu_score=${PERFORMANCE_DATA[cpu_score]}
-    local mem_score=${PERFORMANCE_DATA[mem_score]}
-    local disk_score=${PERFORMANCE_DATA[disk_score]}
     local disk_type=${SYSTEM_INFO[disk_type]}
     
-    log_info "基于性能评分进行计算..."
-    log_info "  - CPU性能: ${cpu_score}/100"
-    log_info "  - 内存性能: ${mem_score}/100"
-    log_info "  - 磁盘性能: ${disk_score}/100"
+    # 直接使用原始性能数据
+    local cpu_performance=${PERFORMANCE_DATA[cpu_single_thread]:-800}  # Sysbench events/sec
+    local mem_bandwidth=${PERFORMANCE_DATA[mem_read_bandwidth]:-10000}  # MB/s
+    local disk_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}  # 4K随机读IOPS
+    
+    log_info "基于实测性能数据进行计算..."
+    log_info "  - CPU性能: ${cpu_performance} events/sec"
+    log_info "  - 内存容量: ${ram_mb} MB ($(echo "scale=2; $ram_mb/1024" | bc) GB)"
+    log_info "  - 内存带宽: ${mem_bandwidth} MB/s"
+    log_info "  - 磁盘IOPS: ${disk_iops} (4K随机读)"
     
     # 服务器级多因子加权算法
     # ==========================================
@@ -1598,127 +578,128 @@ calculate_optimal_swap_advanced() {
     # 因子5: 服务器稳定性系数（保守设置）
     # ==========================================
     
-    # 基础swap计算（服务器环境算法 - Red Hat/Oracle推荐）
-    # 服务器建议：即使内存很大，也保持一定swap以应对突发情况
+    # 基础swap计算（Red Hat/Oracle推荐 - 根据内存大小分级）
+    # 小内存需要更多swap，大内存需要更少swap
     local base_swap
+    
     if (( $(echo "$ram_gb < 1" | bc -l) )); then
-        # 极小内存服务器（<1GB）- 特殊处理
-        if [[ "${SYSTEM_INFO[is_virtualized]}" == "是"* ]]; then
-            # 虚拟化+极小内存：需要更激进的swap策略
-            base_swap=$(echo "scale=0; $ram_mb * 2.5" | bc)
-            log_warn "极小内存虚拟化环境，采用激进swap策略(RAM×2.5)"
-        else
-            base_swap=$(echo "scale=0; $ram_mb * 2.2" | bc)
-        fi
+        # 极小内存（<1GB）：保守设置，为disk_factor(最大1.4)预留调整空间
+        # 目标：×1.4后约等于RAM×2
+        base_swap=$(echo "scale=0; $ram_mb * 1.4" | bc)
         log_warn "内存过小（<1GB），强烈不建议用于生产服务器"
     elif (( $(echo "$ram_gb < 2" | bc -l) )); then
-        # 小内存服务器（1-2GB）
-        base_swap=$(echo "scale=0; $ram_mb * 2" | bc)
+        # 小内存（1-2GB）：目标×1.4后约等于RAM×1.8
+        base_swap=$(echo "scale=0; $ram_mb * 1.3" | bc)
         log_warn "内存较小（<2GB），不建议用于生产服务器"
     elif (( $(echo "$ram_gb < 4" | bc -l) )); then
-        # 小内存服务器
-        base_swap=$(echo "scale=0; $ram_mb * 2" | bc)
+        # 小内存（2-4GB）：目标×1.2后约等于RAM×1.2
+        base_swap=$(echo "scale=0; $ram_mb * 1.0" | bc)
     elif (( $(echo "$ram_gb < 8" | bc -l) )); then
-        # 中小内存服务器
-        base_swap=$(echo "scale=0; $ram_mb * 1.5" | bc)
+        # 中等内存（4-8GB）：目标×1.2后约等于RAM×0.8
+        base_swap=$(echo "scale=0; $ram_mb * 0.7" | bc)
     elif (( $(echo "$ram_gb < 16" | bc -l) )); then
-        # 中等内存服务器
-        base_swap=$(echo "scale=0; $ram_mb * 1" | bc)
-    elif (( $(echo "$ram_gb < 32" | bc -l) )); then
-        # 大内存服务器
-        base_swap=$(echo "scale=0; $ram_mb * 0.75" | bc)
-    elif (( $(echo "$ram_gb < 64" | bc -l) )); then
-        # 超大内存服务器
+        # 较大内存（8-16GB）：目标×0.7后约等于RAM×0.35
         base_swap=$(echo "scale=0; $ram_mb * 0.5" | bc)
-    elif (( $(echo "$ram_gb < 128" | bc -l) )); then
-        # 海量内存服务器
-        base_swap=$(echo "scale=0; $ram_mb * 0.25" | bc)
-    else
-        # 极大内存服务器（128GB+）
-        # Red Hat建议：至少保持8-16GB swap用于内核转储
-        base_swap=16384  # 16GB
-    fi
-    
-    # ==========================================
-    # 优化后的系数计算（契合虚拟内存优化本质）
-    # ==========================================
-    
-    # CPU性能调整系数（降低权重：范围0.97-1.03）
-    # 原因：CPU性能对Swap效率影响较小（主要影响上下文切换，差异<10%）
-    # 重要性：低（约占总影响的10%）
-    local cpu_factor=$(echo "scale=4; 1.03 - ($cpu_score / 100) * 0.06" | bc)
-    
-    # 内存容量压力系数（新增！范围0.80-1.20）
-    # 原因：内存大小是决定Swap策略的关键因素
-    # 重要性：高（约占总影响的30%）
-    local ram_pressure_factor
-    if (( $(echo "$ram_gb < 0.5" | bc -l) )); then
-        ram_pressure_factor=1.20  # 极小内存：大幅增加Swap
-    elif (( $(echo "$ram_gb < 1" | bc -l) )); then
-        ram_pressure_factor=1.15  # <1GB：显著增加
-    elif (( $(echo "$ram_gb < 2" | bc -l) )); then
-        ram_pressure_factor=1.10  # <2GB：适度增加
-    elif (( $(echo "$ram_gb < 4" | bc -l) )); then
-        ram_pressure_factor=1.05  # <4GB：略微增加
-    elif (( $(echo "$ram_gb < 8" | bc -l) )); then
-        ram_pressure_factor=1.00  # 4-8GB：标准
-    elif (( $(echo "$ram_gb < 16" | bc -l) )); then
-        ram_pressure_factor=0.95  # 8-16GB：略微减少
     elif (( $(echo "$ram_gb < 32" | bc -l) )); then
-        ram_pressure_factor=0.90  # 16-32GB：适度减少
+        # 大内存（16-32GB）
+        base_swap=$(echo "scale=0; $ram_mb * 0.35" | bc)
+    elif (( $(echo "$ram_gb < 64" | bc -l) )); then
+        # 超大内存（32-64GB）
+        base_swap=$(echo "scale=0; $ram_mb * 0.18" | bc)
+    elif (( $(echo "$ram_gb < 128" | bc -l) )); then
+        # 海量内存（64-128GB）
+        base_swap=8192  # 固定8GB
     else
-        ram_pressure_factor=0.80  # >32GB：显著减少
+        # 极大内存（>=128GB）
+        base_swap=16384  # 固定16GB（用于内核转储）
     fi
     
-    # 内存速度调整系数（降低权重：范围0.98-1.02）
-    # 原因：内存速度对Swap效率影响极小（现代内存速度差异<2倍，但性能已足够快）
-    # 重要性：极低（约占总影响的5%）
-    local mem_speed_factor=$(echo "scale=4; 1.02 - ($mem_score / 100) * 0.04" | bc)
+    # ==========================================
+    # 基于原始性能数据的系数计算
+    # ==========================================
     
-    # 磁盘性能调整系数（最高权重：范围0.70-1.40）
-    # 原因：磁盘IOPS直接决定Swap可用性（差异可达1000倍）
-    # 重要性：最高（约占总影响的60%）
+    # CPU性能调整系数（范围0.97-1.03）
+    # 基准：1000 events/sec
+    # 逻辑：CPU越慢，上下文切换开销越大，略微增加Swap缓冲
+    local cpu_factor
+    if [ $cpu_performance -ge 1500 ]; then
+        cpu_factor=0.97  # >=1500 events/sec：略微减少Swap
+    elif [ $cpu_performance -ge 1000 ]; then
+        cpu_factor=1.00  # 1000-1500 events/sec：标准策略
+    elif [ $cpu_performance -ge 600 ]; then
+        cpu_factor=1.01  # 600-1000 events/sec：略微增加
+    else
+        cpu_factor=1.03  # <600 events/sec：增加Swap缓冲
+    fi
+    
+    
+    # 内存速度调整系数（范围0.98-1.02）
+    # 基准：20000 MB/s (DDR4-2666 ECC)
+    # 逻辑：内存带宽对Swap效率影响很小，仅微调
+    local mem_speed_factor
+    if [ $mem_bandwidth -ge 30000 ]; then
+        mem_speed_factor=0.98  # >=30000 MB/s：略微减少Swap
+    elif [ $mem_bandwidth -ge 15000 ]; then
+        mem_speed_factor=1.00  # 15000-30000 MB/s：标准策略
+    else
+        mem_speed_factor=1.02  # <15000 MB/s：略微增加Swap
+    fi
+    
+    # 磁盘IOPS调整系数（范围0.70-1.40）
+    # 基准：10000 IOPS
+    # 逻辑：IOPS直接决定Swap可用性，影响最大
     local disk_factor
     local is_virt=${SYSTEM_INFO[is_virtualized]:-"否"}
     
     if [ "$disk_type" = "SSD" ]; then
-        # 企业级SSD: 高IOPS，可以大幅减少Swap，延长寿命
-        if (( $(echo "$disk_score > 70" | bc -l) )); then
-            disk_factor=0.70  # 顶级NVMe：IOPS >100k，可以显著减少Swap
-        elif (( $(echo "$disk_score > 50" | bc -l) )); then
-            disk_factor=0.80  # 高端SSD：IOPS 50k-100k
-        elif (( $(echo "$disk_score > 30" | bc -l) )); then
-            disk_factor=0.90  # 中端SSD：IOPS 10k-50k
+        # SSD: 根据IOPS调整
+        if [ $disk_iops -ge 100000 ]; then
+            disk_factor=0.70  # >=100k IOPS：大幅减少Swap
+        elif [ $disk_iops -ge 50000 ]; then
+            disk_factor=0.80  # 50k-100k IOPS
+        elif [ $disk_iops -ge 20000 ]; then
+            disk_factor=0.90  # 20k-50k IOPS
+        elif [ $disk_iops -ge 10000 ]; then
+            disk_factor=0.95  # 10k-20k IOPS
         else
-            disk_factor=1.00  # 入门SSD：IOPS <10k，标准策略
+            disk_factor=1.00  # <10k IOPS
         fi
     else
-        # HDD或虚拟化环境: IOPS低，需要大幅增加Swap缓冲
+        # HDD或虚拟化环境: IOPS低，需要大幅增加Swap
         if [[ "$is_virt" == "是"* ]]; then
-            # 虚拟化环境：IOPS极不稳定且低
-            if (( $(echo "$disk_score < 5" | bc -l) )); then
-                disk_factor=1.40  # IOPS <200：极限情况
-                log_warn "极低IOPS虚拟化环境，大幅增加swap（+40%）应对IO瓶颈"
+            # 虚拟化环境：IOPS极低且不稳定
+            if [ $disk_iops -lt 150 ]; then
+                disk_factor=1.40  # IOPS <150：极限情况
+                log_warn "极低IOPS（${disk_iops}），大幅增加swap（+40%）应对IO瓶颈"
+            elif [ $disk_iops -lt 300 ]; then
+                disk_factor=1.30  # IOPS 150-300：虚拟化典型
+                log_warn "虚拟化低IOPS（${disk_iops}），增加swap（+30%）应对IO波动"
             else
-                disk_factor=1.30  # IOPS 200-500：虚拟化典型情况
-                log_warn "检测到虚拟化环境，IOPS受限，增加swap大小（+30%）以应对IO性能波动"
+                disk_factor=1.20  # IOPS >300：虚拟化较好情况
+                log_info "虚拟化环境IOPS=${disk_iops}，适度增加swap"
             fi
-        elif (( $(echo "$disk_score > 25" | bc -l) )); then
-            disk_factor=1.10   # 10K RPM SAS：IOPS 200-400
-        elif (( $(echo "$disk_score > 15" | bc -l) )); then
-            disk_factor=1.20   # 7200 RPM：IOPS 100-200
         else
-            disk_factor=1.30   # 5400 RPM或更差：IOPS <100
+            # 物理HDD：根据IOPS调整
+            if [ $disk_iops -ge 400 ]; then
+                disk_factor=1.05  # 15K RPM SAS：IOPS >400
+            elif [ $disk_iops -ge 200 ]; then
+                disk_factor=1.10  # 10K RPM：IOPS 200-400
+            elif [ $disk_iops -ge 100 ]; then
+                disk_factor=1.20  # 7200 RPM：IOPS 100-200
+            else
+                disk_factor=1.30  # 5400 RPM：IOPS <100
+            fi
         fi
     fi
     
-    log_info "优化算法权重分配：磁盘60% > 内存容量30% > CPU+内存速度10%"
+    log_info "算法策略：直接基于原始性能指标"
     if [[ "$is_virt" == "是"* ]]; then
-        log_info "虚拟化环境调整：考虑到IOPS限制，适当增加swap以提高稳定性"
+        log_info "虚拟化优化：IOPS主导策略调整"
     fi
     
-    # 综合计算最优swap（使用优化后的多因子模型）
-    local optimal_swap=$(echo "scale=0; $base_swap * $cpu_factor * $ram_pressure_factor * $mem_speed_factor * $disk_factor" | bc | cut -d'.' -f1)
+    # 综合计算最优swap（三因子模型：CPU + 内存带宽 + 磁盘IOPS）
+    # 注意：内存容量已在base_swap中体现，不需要额外系数
+    local optimal_swap=$(echo "scale=0; $base_swap * $cpu_factor * $mem_speed_factor * $disk_factor" | bc | cut -d'.' -f1)
     
     # 确保swap在合理范围内
     # 最小值：256MB或RAM的10%（取较大值）
@@ -1743,12 +724,12 @@ calculate_optimal_swap_advanced() {
     
     log_success "推荐Swap大小: ${optimal_swap} MB ($(echo "scale=2; $optimal_swap/1024" | bc) GB)"
     echo ""
-    log_info "📊 多因子加权模型计算详情："
-    log_info "  └─ CPU性能系数: ${cpu_factor} (权重10%, 范围0.97-1.03)"
-    log_info "  └─ 内存容量压力: ${ram_pressure_factor} (权重30%, 范围0.80-1.20)"
-    log_info "  └─ 内存速度系数: ${mem_speed_factor} (权重5%, 范围0.98-1.02)"
-    log_info "  └─ 磁盘IOPS系数: ${disk_factor} (权重60%, 范围0.70-1.40)"
-    log_info "  └─ 综合系数: $(echo "scale=4; $cpu_factor * $ram_pressure_factor * $mem_speed_factor * $disk_factor" | bc)"
+    log_info "📊 三因子模型计算详情："
+    log_info "  ├─ 基准Swap: ${base_swap} MB (基于${ram_gb}GB内存)"
+    log_info "  ├─ CPU性能系数: ${cpu_factor} (影响5%, 范围0.97-1.03)"
+    log_info "  ├─ 内存带宽系数: ${mem_speed_factor} (影响5%, 范围0.98-1.02)"
+    log_info "  ├─ 磁盘IOPS系数: ${disk_factor} (影响90%, 范围0.70-1.40)"
+    log_info "  └─ 综合系数: $(echo "scale=4; $cpu_factor * $mem_speed_factor * $disk_factor" | bc)"
 }
 
 # 商业级算法：计算最优swappiness
@@ -1756,10 +737,10 @@ calculate_optimal_swappiness_advanced() {
     log_progress "计算最优Swappiness值..."
     
     local ram_gb=$(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]} / 1024" | bc)
-    local cpu_score=${PERFORMANCE_DATA[cpu_score]}
-    local mem_score=${PERFORMANCE_DATA[mem_score]}
-    local disk_score=${PERFORMANCE_DATA[disk_score]}
+    local ram_mb=${SYSTEM_INFO[total_ram_mb]}
     local disk_type=${SYSTEM_INFO[disk_type]}
+    local disk_iops=${PERFORMANCE_DATA[disk_rand_read_iops]:-100}
+    local is_virt=${SYSTEM_INFO[is_virtualized]:-"否"}
     
     # 服务器Swappiness推荐算法（Red Hat/Oracle/Google SRE标准）
     # 服务器环境swappiness通常设置较低，以优先使用物理内存
@@ -1798,41 +779,43 @@ calculate_optimal_swappiness_advanced() {
         base_swappiness=1   # 海量内存服务器（Google标准）
     fi
     
-    # 根据磁盘类型和性能微调（服务器版）
-    # 特别考虑虚拟化环境的影响
+    # 根据磁盘IOPS调整（直接基于IOPS值）
     local disk_adjustment=0
-    local is_virt=${SYSTEM_INFO[is_virtualized]:-"否"}
     
     if [ "$disk_type" = "SSD" ]; then
-        # 企业级SSD: 性能好但服务器仍应保守
-        if (( $(echo "$disk_score > 70" | bc -l) )); then
-            disk_adjustment=2   # 高性能企业SSD，略微提高
-        elif (( $(echo "$disk_score > 40" | bc -l) )); then
-            disk_adjustment=1   # 中等企业SSD
+        # SSD: IOPS高，可以适度提高swappiness
+        if [ $disk_iops -ge 100000 ]; then
+            disk_adjustment=2   # >=100k IOPS
+        elif [ $disk_iops -ge 50000 ]; then
+            disk_adjustment=1   # 50k-100k IOPS
         else
-            disk_adjustment=0   # 低端SSD，不调整
+            disk_adjustment=0   # <50k IOPS
         fi
     else
-        # HDD或虚拟化环境: 降低swappiness避免swap抖动
+        # HDD或虚拟化环境: IOPS低，需要降低swappiness
         if [[ "$is_virt" == "是"* ]]; then
-            # 虚拟化环境：IOPS不稳定，大幅降低swappiness
-            disk_adjustment=-15
-            log_warn "虚拟化环境检测：IOPS受限且不稳定，降低swappiness避免性能抖动"
-        elif (( $(echo "$disk_score < 30" | bc -l) )); then
-            disk_adjustment=-10  # 低性能HDD，严重降低
-            log_warn "HDD性能较低，建议升级到SSD或降低工作负载"
-        elif (( $(echo "$disk_score < 50" | bc -l) )); then
-            disk_adjustment=-5   # 标准HDD
+            # 虚拟化环境：根据IOPS严重程度调整
+            if [ $disk_iops -lt 150 ]; then
+                disk_adjustment=-15  # IOPS <150：严重受限
+                log_warn "极低IOPS（${disk_iops}），大幅降低swappiness避免频繁交换"
+            elif [ $disk_iops -lt 300 ]; then
+                disk_adjustment=-10  # IOPS 150-300：明显受限
+                log_warn "低IOPS（${disk_iops}），降低swappiness避免性能抖动"
+            else
+                disk_adjustment=-5   # IOPS >300：轻度受限
+                log_info "虚拟化IOPS（${disk_iops}），适度降低swappiness"
+            fi
         else
-            disk_adjustment=-2   # 高性能HDD
+            # 物理HDD：根据IOPS调整
+            if [ $disk_iops -ge 400 ]; then
+                disk_adjustment=-2   # 高性能HDD (15K RPM)
+            elif [ $disk_iops -ge 200 ]; then
+                disk_adjustment=-5   # 标准HDD (10K/7200 RPM)
+            else
+                disk_adjustment=-10  # 低速HDD (5400 RPM)
+                log_warn "HDD IOPS过低（${disk_iops}），建议升级到SSD"
+            fi
         fi
-    fi
-    
-    # 根据CPU和内存性能微调（服务器版：更保守）
-    # 高性能系统可以进一步降低swappiness，优先使用内存
-    if (( $(echo "$cpu_score > 70 && $mem_score > 70" | bc -l) )); then
-        disk_adjustment=$((disk_adjustment - 3))
-        log_info "检测到高性能CPU和内存，降低swappiness以充分利用硬件"
     fi
     
     local optimal_swappiness=$((base_swappiness + disk_adjustment))
@@ -2023,53 +1006,54 @@ calculate_advanced_vm_parameters() {
     log_progress "计算高级虚拟内存参数..."
     
     local disk_type=${SYSTEM_INFO[disk_type]:-HDD}
-    local disk_score=${PERFORMANCE_DATA[disk_score]:-20}
+    local disk_iops=${PERFORMANCE_DATA[disk_rand_write_iops]:-100}  # 使用写IOPS(脏页写回)
     local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
-    local ram_gb=$(echo "scale=2; $ram_mb / 1024" | bc)  # 修复：添加ram_gb变量定义
+    local ram_gb=$(echo "scale=2; $ram_mb / 1024" | bc)
     local cpu_cores=${SYSTEM_INFO[cpu_cores]:-1}
     
     # 1. vm.vfs_cache_pressure
     # 控制内核回收用于缓存目录和inode对象的内存的倾向
-    # Facebook生产环境优化算法
-    if [ "$disk_type" = "SSD" ] && (( $(echo "${disk_score:-20} > 60" | bc -l) )); then
-        # 高性能SSD：可以更积极回收缓存
-        PERFORMANCE_DATA[vfs_cache_pressure]=150
+    # 逻辑：IOPS高的存储可以更积极回收缓存（可以快速重新加载）
+    if [ "$disk_type" = "SSD" ] && [ $disk_iops -ge 50000 ]; then
+        PERFORMANCE_DATA[vfs_cache_pressure]=150  # 高IOPS：积极回收
     elif [ "$disk_type" = "SSD" ]; then
-        PERFORMANCE_DATA[vfs_cache_pressure]=100
+        PERFORMANCE_DATA[vfs_cache_pressure]=100  # 普通SSD：标准策略
     else
-        # HDD：保留更多缓存
-        if (( $(echo "${disk_score:-20} < 30" | bc -l) )); then
-            PERFORMANCE_DATA[vfs_cache_pressure]=50
+        # HDD/虚拟化：保留更多缓存
+        if [ $disk_iops -lt 200 ]; then
+            PERFORMANCE_DATA[vfs_cache_pressure]=50  # 低IOPS：大量保留缓存
         else
-            PERFORMANCE_DATA[vfs_cache_pressure]=75
+            PERFORMANCE_DATA[vfs_cache_pressure]=75  # 中等HDD
         fi
     fi
     
     # 2. vm.dirty_ratio
     # 当脏页达到内存的这个百分比时，进程会被阻塞并强制写回
-    # 关键原则：内存越小，dirty_ratio应该越低（避免占用过多内存）
+    # 关键原则：
+    #   - 内存越小，dirty_ratio越低（避免占用过多内存）
+    #   - IOPS越低，dirty_ratio越低（避免突发写入堵塞）
     if [ "$disk_type" = "SSD" ]; then
-        if (( $(echo "${disk_score:-20} > 70" | bc -l) )); then
-            PERFORMANCE_DATA[dirty_ratio]=40  # 高性能SSD
+        if [ $disk_iops -ge 50000 ]; then
+            PERFORMANCE_DATA[dirty_ratio]=40  # 高IOPS SSD：可以缓存更多脏页
         else
             PERFORMANCE_DATA[dirty_ratio]=30  # 普通SSD
         fi
     else
-        # HDD根据性能分级和内存大小
+        # HDD/虚拟化：根据IOPS和内存大小
         if (( $(echo "${ram_gb:-1} < 1" | bc -l) )); then
             # 极小内存：dirty_ratio必须很低，避免脏页占用太多宝贵内存
             PERFORMANCE_DATA[dirty_ratio]=5
             log_info "极小内存系统：降低dirty_ratio到5%，避免脏页占用过多内存"
-        elif (( $(echo "${disk_score:-20} > 40" | bc -l) )); then
-            PERFORMANCE_DATA[dirty_ratio]=20
-        elif (( $(echo "${disk_score:-20} > 20" | bc -l) )); then
-            PERFORMANCE_DATA[dirty_ratio]=15
+        elif [ $disk_iops -ge 400 ]; then
+            PERFORMANCE_DATA[dirty_ratio]=20  # 高速HDD (15K RPM)
+        elif [ $disk_iops -ge 200 ]; then
+            PERFORMANCE_DATA[dirty_ratio]=15  # 标准HDD (10K/7200 RPM)
         else
-            # 低性能HDD且低内存
+            # 低IOPS HDD/虚拟化且低内存
             if (( $(echo "${ram_gb:-1} < 2" | bc -l) )); then
-                PERFORMANCE_DATA[dirty_ratio]=8
+                PERFORMANCE_DATA[dirty_ratio]=8  # 低IOPS+小内存：非常保守
             else
-                PERFORMANCE_DATA[dirty_ratio]=10
+                PERFORMANCE_DATA[dirty_ratio]=10  # 低IOPS：保守策略
             fi
         fi
     fi
@@ -2082,14 +1066,14 @@ calculate_advanced_vm_parameters() {
     fi
     
     # 4. vm.dirty_expire_centisecs
-    # 脏页的过期时间
+    # 脏页的过期时间（根据IOPS调整）
     if [ "$disk_type" = "SSD" ]; then
-        PERFORMANCE_DATA[dirty_expire]=1500  # 15秒
+        PERFORMANCE_DATA[dirty_expire]=1500  # 15秒（SSD写入快）
     else
-        if (( $(echo "${disk_score:-20} < 30" | bc -l) )); then
-            PERFORMANCE_DATA[dirty_expire]=3000  # 30秒，慢速HDD
+        if [ $disk_iops -lt 150 ]; then
+            PERFORMANCE_DATA[dirty_expire]=3000  # 30秒（极慢HDD/虚拟化）
         else
-            PERFORMANCE_DATA[dirty_expire]=2000  # 20秒
+            PERFORMANCE_DATA[dirty_expire]=2000  # 20秒（普通HDD）
         fi
     fi
     
@@ -2174,23 +1158,22 @@ show_professional_report() {
     printf "║                     系统硬件配置信息                              ║\n"
     printf "╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
     echo ""
-    printf "${YELLOW}CPU (Sysbench):${NC}\n"
+    printf "${YELLOW}CPU:${NC}\n"
     echo "  ${SYSTEM_INFO[cpu_model]}"
-    echo "  ${SYSTEM_INFO[cpu_cores]} 核心 @ ${SYSTEM_INFO[cpu_max_freq]} MHz"
-    printf "  ${CYAN}测试得分: ${PERFORMANCE_DATA[cpu_single_thread]} Scores ⭐对标ecs${NC}\n"
-    echo "  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100"
+    echo "  核心数: ${SYSTEM_INFO[cpu_cores]}, 频率: ${SYSTEM_INFO[cpu_max_freq]} MHz"
+    printf "  ${CYAN}性能: ${PERFORMANCE_DATA[cpu_single_thread]} events/sec ⭐优化关键指标${NC}\n"
     echo ""
-    printf "${YELLOW}内存 (Lemonbench):${NC}\n"
-    echo "  $(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB - ${SYSTEM_INFO[mem_category]:-未识别}"
-    printf "  ${CYAN}读取: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s  |  写入: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}\n"
-    echo "  标准化评分: ${PERFORMANCE_DATA[mem_score]}/100"
+    printf "${YELLOW}内存:${NC}\n"
+    echo "  容量: $(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB"
+    echo "  类型: ${SYSTEM_INFO[mem_category]:-未识别}"
+    printf "  ${CYAN}读取带宽: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s ⭐优化关键指标${NC}\n"
     echo ""
-    printf "${YELLOW}磁盘 (FIO):${NC}\n"
-    echo "  ${SYSTEM_INFO[disk_device]} - ${SYSTEM_INFO[disk_type]} - ${SYSTEM_INFO[disk_category]:-未识别}"
+    printf "${YELLOW}磁盘:${NC}\n"
+    echo "  设备: ${SYSTEM_INFO[disk_device]} (${SYSTEM_INFO[disk_type]})"
+    echo "  类型: ${SYSTEM_INFO[disk_category]:-未识别}"
     echo "  虚拟化: ${SYSTEM_INFO[is_virtualized]:-否}"
-    printf "  ${CYAN}顺序读写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}\n"
-    printf "  ${CYAN}4K IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐真实性能${NC}\n"
-    echo "  标准化评分: ${PERFORMANCE_DATA[disk_score]}/100"
+    printf "  ${CYAN}顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s${NC}\n"
+    printf "  ${CYAN}4K随机IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐优化关键指标${NC}\n"
     echo ""
     printf "${CYAN}╔═══════════════════════════════════════════════════════════════════╗\n"
     printf "║                   商业级优化参数推荐                              ║\n"
@@ -2240,9 +1223,9 @@ show_professional_report() {
         printf "${YELLOW}检测到: ${PERFORMANCE_DATA[disk_virt_warning]:-虚拟化环境特征}${NC}\n"
         echo ""
         printf "${CYAN}已自动针对虚拟化优化：${NC}\n"
-        echo "  ✅ 评分以IOPS为准（忽略虚高的顺序速度）"
-        echo "  ✅ Swap增加20%应对IO波动"
-        echo "  ✅ Swappiness降低避免频繁交换（IOPS有限）"
+        echo "  ✅ 基于实测IOPS进行优化（顺序速度仅供参考）"
+        echo "  ✅ Swap大小根据低IOPS调整"
+        echo "  ✅ Swappiness降低避免频繁交换"
     fi
     
     echo ""
@@ -2569,7 +1552,7 @@ EOF
     install_professional_tools
     
     echo ""
-    log_warn "性能测试将执行约2-3分钟，请耐心等待..."
+    log_warn "性能测试将执行约1分钟，请耐心等待..."
     log_info "脚本将自动完成：测试 → 分析 → 对比 → 应用优化"
     echo ""
     printf "${CYAN}准备开始...${NC}"
