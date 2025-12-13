@@ -2248,18 +2248,19 @@ apply_optimizations() {
     
     # 检查磁盘空间并尝试备份（但不阻止后续操作）
     local available_space=$(df /etc | tail -1 | awk '{print $4}')
-    local backup_success=0
+    BACKUP_SUCCESS=0  # 全局变量，供main函数使用
     
     if [ $available_space -gt 512 ]; then
         # 空间充足，尝试备份
         local backup_file="/etc/sysctl.conf.backup.$(date +%Y%m%d_%H%M%S)"
         if [ -f /etc/sysctl.conf ] && cp /etc/sysctl.conf $backup_file 2>/dev/null; then
             log_success "已备份配置到: $backup_file"
-            backup_success=1
+            BACKUP_SUCCESS=1
+            BACKUP_FILE="$backup_file"  # 记录备份文件路径
         fi
     fi
     
-    if [ $backup_success -eq 0 ]; then
+    if [ $BACKUP_SUCCESS -eq 0 ]; then
         log_warn "⚠️  磁盘空间不足，跳过备份（剩余${available_space}KB）"
         log_info "直接覆盖配置以确保永久生效（代理服务器模式）"
     fi
@@ -2406,10 +2407,20 @@ manage_swap_advanced() {
     log_info "当前Swap: ${current_swap} MB"
     log_info "推荐Swap: ${optimal_swap} MB"
     
-    # 计算差异
+    # 计算差异（使用与对比函数一致的动态阈值）
     local diff=$((optimal_swap - current_swap))
     local diff_abs=${diff#-}
-    local threshold=$((optimal_swap / 5))  # 20%阈值
+    
+    # 动态阈值：<2GB内存用10%，>=2GB用20%（与compare_vm_parameters一致）
+    local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
+    local threshold
+    if [ $ram_mb -lt 2048 ]; then
+        threshold=$((optimal_swap / 10))  # 小内存：10%阈值
+        log_info "小内存系统，使用10%精确阈值（${threshold}MB）"
+    else
+        threshold=$((optimal_swap / 5))   # 大内存：20%阈值
+        log_info "使用20%阈值（${threshold}MB）"
+    fi
     
     local need_adjustment=0
     
@@ -2417,10 +2428,10 @@ manage_swap_advanced() {
         log_warn "系统当前没有Swap，强烈建议创建"
         need_adjustment=1
     elif [ $diff_abs -gt $threshold ]; then
-        log_warn "当前Swap与推荐值差异超过20%"
+        log_warn "当前Swap与推荐值差异超过阈值（差${diff_abs}MB > ${threshold}MB）"
         need_adjustment=1
     else
-        log_success "当前Swap大小合理，无需调整"
+        log_success "当前Swap大小合理，无需调整（差异${diff_abs}MB ≤ 阈值${threshold}MB）"
         return 0
     fi
     
@@ -2577,7 +2588,16 @@ EOF
         echo ""
         log_success "📊 已成功自动应用 ${change_count} 项参数变更"
         log_success "💾 配置已永久保存到 /etc/sysctl.conf"
-        log_success "📁 原配置已备份到 /etc/sysctl.conf.backup.$(date +%Y%m%d)_*"
+        
+        # 根据实际备份情况显示不同消息
+        if [ "${BACKUP_SUCCESS:-0}" -eq 1 ]; then
+            log_success "📁 原配置已备份到: ${BACKUP_FILE}"
+        else
+            log_warn "⚠️  磁盘空间不足，未备份原配置"
+            log_info "💡 建议清理空间后运行以下命令手动备份："
+            echo "   sudo cp /etc/sysctl.conf /etc/sysctl.conf.backup"
+        fi
+        
         echo ""
         log_warn "🔄 强烈建议重启系统以确保所有设置完全生效："
         printf "${CYAN}     sudo reboot${NC}\n"
