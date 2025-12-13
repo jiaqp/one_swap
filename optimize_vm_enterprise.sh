@@ -68,14 +68,41 @@
 #   - NUMA感知调优
 ################################################################################
 
+# 颜色支持检测
+USE_COLOR=1
+
+# 检测是否支持颜色
+if [ ! -t 1 ] || [ "$TERM" = "dumb" ]; then
+    # 输出不是终端或TERM=dumb，禁用颜色
+    USE_COLOR=0
+fi
+
+# 检查命令行参数
+for arg in "$@"; do
+    if [ "$arg" = "--no-color" ]; then
+        USE_COLOR=0
+    fi
+done
+
 # 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
-NC='\033[0m'
+if [ $USE_COLOR -eq 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    MAGENTA='\033[0;35m'
+    NC='\033[0m'
+else
+    # 禁用颜色
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    CYAN=''
+    MAGENTA=''
+    NC=''
+fi
 
 # 性能数据存储
 declare -A PERFORMANCE_DATA
@@ -83,30 +110,30 @@ declare -A SYSTEM_INFO
 
 # 日志函数
 log_info() {
-    echo -e "${GREEN}[信息]${NC} $1"
+    printf "${GREEN}[信息]${NC} %s\n" "$1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[警告]${NC} $1"
+    printf "${YELLOW}[警告]${NC} %s\n" "$1"
 }
 
 log_error() {
-    echo -e "${RED}[错误]${NC} $1"
+    printf "${RED}[错误]${NC} %s\n" "$1"
 }
 
 log_success() {
-    echo -e "${CYAN}[成功]${NC} $1"
+    printf "${CYAN}[成功]${NC} %s\n" "$1"
 }
 
 log_header() {
     echo ""
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BLUE}  $1${NC}"
-    echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
+    printf "${BLUE}  %s${NC}\n" "$1"
+    printf "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
 }
 
 log_progress() {
-    echo -e "${MAGENTA}[进行中]${NC} $1"
+    printf "${MAGENTA}[进行中]${NC} %s\n" "$1"
 }
 
 # 检查root权限
@@ -1415,63 +1442,63 @@ show_professional_report() {
     log_header "专业性能测试与优化报告"
     
     echo ""
-    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗"
-    echo -e "║                     系统硬件配置信息                              ║"
-    echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    printf "${CYAN}╔═══════════════════════════════════════════════════════════════════╗\n"
+    printf "║                     系统硬件配置信息                              ║\n"
+    printf "╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
     echo ""
-    echo -e "${YELLOW}CPU (Sysbench):${NC}"
+    printf "${YELLOW}CPU (Sysbench):${NC}\n"
     echo "  ${SYSTEM_INFO[cpu_model]}"
     echo "  ${SYSTEM_INFO[cpu_cores]} 核心 @ ${SYSTEM_INFO[cpu_max_freq]} MHz"
-    echo -e "  ${CYAN}测试得分: ${PERFORMANCE_DATA[cpu_single_thread]} Scores ⭐对标ecs${NC}"
+    printf "  ${CYAN}测试得分: ${PERFORMANCE_DATA[cpu_single_thread]} Scores ⭐对标ecs${NC}\n"
     echo "  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100"
     echo ""
-    echo -e "${YELLOW}内存 (Lemonbench):${NC}"
+    printf "${YELLOW}内存 (Lemonbench):${NC}\n"
     echo "  $(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB - ${SYSTEM_INFO[mem_category]:-未识别}"
-    echo -e "  ${CYAN}读取: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s  |  写入: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}"
+    printf "  ${CYAN}读取: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s  |  写入: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}\n"
     echo "  标准化评分: ${PERFORMANCE_DATA[mem_score]}/100"
     echo ""
-    echo -e "${YELLOW}磁盘 (FIO):${NC}"
+    printf "${YELLOW}磁盘 (FIO):${NC}\n"
     echo "  ${SYSTEM_INFO[disk_device]} - ${SYSTEM_INFO[disk_type]} - ${SYSTEM_INFO[disk_category]:-未识别}"
     echo "  虚拟化: ${SYSTEM_INFO[is_virtualized]:-否}"
-    echo -e "  ${CYAN}顺序读写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}"
-    echo -e "  ${CYAN}4K IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐真实性能${NC}"
+    printf "  ${CYAN}顺序读写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}\n"
+    printf "  ${CYAN}4K IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐真实性能${NC}\n"
     echo "  标准化评分: ${PERFORMANCE_DATA[disk_score]}/100"
     echo ""
-    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗"
-    echo -e "║                   商业级优化参数推荐                              ║"
-    echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    printf "${CYAN}╔═══════════════════════════════════════════════════════════════════╗\n"
+    printf "║                   商业级优化参数推荐                              ║\n"
+    printf "╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
     echo ""
-    echo -e "${GREEN}核心参数:${NC}"
+    printf "${GREEN}核心参数:${NC}\n"
     echo "  vm.swappiness                = ${PERFORMANCE_DATA[optimal_swappiness]}"
     echo "  推荐Swap大小                 = ${PERFORMANCE_DATA[optimal_swap]} MB ($(echo "scale=2; ${PERFORMANCE_DATA[optimal_swap]}/1024" | bc) GB)"
     echo ""
-    echo -e "${GREEN}缓存控制参数:${NC}"
+    printf "${GREEN}缓存控制参数:${NC}\n"
     echo "  vm.vfs_cache_pressure        = ${PERFORMANCE_DATA[vfs_cache_pressure]}"
     echo "  vm.dirty_ratio               = ${PERFORMANCE_DATA[dirty_ratio]}"
     echo "  vm.dirty_background_ratio    = ${PERFORMANCE_DATA[dirty_background_ratio]}"
     echo "  vm.dirty_expire_centisecs    = ${PERFORMANCE_DATA[dirty_expire]}"
     echo "  vm.dirty_writeback_centisecs = ${PERFORMANCE_DATA[dirty_writeback]}"
     echo ""
-    echo -e "${GREEN}内存管理参数:${NC}"
+    printf "${GREEN}内存管理参数:${NC}\n"
     echo "  vm.min_free_kbytes           = ${PERFORMANCE_DATA[min_free_kbytes]} KB"
     echo "  vm.page_cluster              = ${PERFORMANCE_DATA[page_cluster]}"
     echo "  vm.overcommit_memory         = ${PERFORMANCE_DATA[overcommit_memory]}"
     echo "  vm.overcommit_ratio          = ${PERFORMANCE_DATA[overcommit_ratio]}"
     echo ""
-    echo -e "${CYAN}╔═══════════════════════════════════════════════════════════════════╗"
-    echo -e "║                       优化建议说明                                ║"
-    echo -e "╚═══════════════════════════════════════════════════════════════════╝${NC}"
+    printf "${CYAN}╔═══════════════════════════════════════════════════════════════════╗\n"
+    printf "║                       优化建议说明                                ║\n"
+    printf "╚═══════════════════════════════════════════════════════════════════╝${NC}\n"
     echo ""
 
     # 根据系统类型给出具体建议
     if [ "${SYSTEM_INFO[disk_type]}" = "SSD" ]; then
-        echo -e "${YELLOW}SSD系统优化策略:${NC}"
+        printf "${YELLOW}SSD系统优化策略:${NC}\n"
         echo "  ✓ 降低了swap大小以延长SSD寿命"
         echo "  ✓ 提高了dirty ratio允许更多内存缓冲"
         echo "  ✓ 减少了写回间隔利用SSD高速特性"
         echo "  ✓ 设置page_cluster=0优化随机访问"
     else
-        echo -e "${YELLOW}HDD系统优化策略:${NC}"
+        printf "${YELLOW}HDD系统优化策略:${NC}\n"
         echo "  ✓ 保留了足够的swap空间应对慢速IO"
         echo "  ✓ 降低了vfs_cache_pressure保留更多缓存"
         echo "  ✓ 适度的dirty ratio避免IO突发"
@@ -1481,10 +1508,10 @@ show_professional_report() {
     # 虚拟化环境特殊提示
     if [ "${SYSTEM_INFO[is_virtualized]}" != "否" ]; then
         echo ""
-        echo -e "${RED}⚠️ 虚拟化环境：${SYSTEM_INFO[is_virtualized]}${NC}"
-        echo -e "${YELLOW}检测到: ${PERFORMANCE_DATA[disk_virt_warning]:-虚拟化环境特征}${NC}"
+        printf "${RED}⚠️ 虚拟化环境：${SYSTEM_INFO[is_virtualized]}${NC}\n"
+        printf "${YELLOW}检测到: ${PERFORMANCE_DATA[disk_virt_warning]:-虚拟化环境特征}${NC}\n"
         echo ""
-        echo -e "${CYAN}已自动针对虚拟化优化：${NC}"
+        printf "${CYAN}已自动针对虚拟化优化：${NC}\n"
         echo "  ✅ 评分以IOPS为准（忽略虚高的顺序速度）"
         echo "  ✅ Swap增加20%应对IO波动"
         echo "  ✅ Swappiness降低避免频繁交换（IOPS有限）"
@@ -1494,16 +1521,16 @@ show_professional_report() {
     
     local ram_gb=$(echo "scale=0; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc)
     if [ $ram_gb -lt 2 ]; then
-        echo -e "${YELLOW}低内存系统建议:${NC}"
+        printf "${YELLOW}低内存系统建议:${NC}\n"
         echo "  ✓ 较高的swappiness确保有足够虚拟内存"
         echo "  ✓ 建议升级物理内存以获得更好性能"
         echo "  ✓ 避免同时运行过多程序"
     elif [ $ram_gb -lt 8 ]; then
-        echo -e "${YELLOW}中等内存系统建议:${NC}"
+        printf "${YELLOW}中等内存系统建议:${NC}\n"
         echo "  ✓ 平衡的swap策略兼顾性能和稳定性"
         echo "  ✓ 可以运行大多数日常应用"
     else
-        echo -e "${YELLOW}高内存系统建议:${NC}"
+        printf "${YELLOW}高内存系统建议:${NC}\n"
         echo "  ✓ 最小化swap使用充分发挥内存优势"
         echo "  ✓ 可以运行内存密集型应用"
         echo "  ✓ 考虑使用zswap进一步优化"
