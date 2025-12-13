@@ -622,11 +622,12 @@ calculate_optimal_swap_advanced() {
     # 基准：1000 events/sec
     # 逻辑：CPU越慢，上下文切换开销越大，略微增加Swap缓冲
     local cpu_factor
-    if [ $cpu_performance -ge 1500 ]; then
+    local cpu_perf_int=$(echo "$cpu_performance" | cut -d'.' -f1)
+    if [ $cpu_perf_int -ge 1500 ]; then
         cpu_factor=0.97  # >=1500 events/sec：略微减少Swap
-    elif [ $cpu_performance -ge 1000 ]; then
+    elif [ $cpu_perf_int -ge 1000 ]; then
         cpu_factor=1.00  # 1000-1500 events/sec：标准策略
-    elif [ $cpu_performance -ge 600 ]; then
+    elif [ $cpu_perf_int -ge 600 ]; then
         cpu_factor=1.01  # 600-1000 events/sec：略微增加
     else
         cpu_factor=1.03  # <600 events/sec：增加Swap缓冲
@@ -637,9 +638,10 @@ calculate_optimal_swap_advanced() {
     # 基准：20000 MB/s (DDR4-2666 ECC)
     # 逻辑：内存带宽对Swap效率影响很小，仅微调
     local mem_speed_factor
-    if [ $mem_bandwidth -ge 30000 ]; then
+    local mem_bw_int=$(echo "$mem_bandwidth" | cut -d'.' -f1)
+    if [ $mem_bw_int -ge 30000 ]; then
         mem_speed_factor=0.98  # >=30000 MB/s：略微减少Swap
-    elif [ $mem_bandwidth -ge 15000 ]; then
+    elif [ $mem_bw_int -ge 15000 ]; then
         mem_speed_factor=1.00  # 15000-30000 MB/s：标准策略
     else
         mem_speed_factor=1.02  # <15000 MB/s：略微增加Swap
