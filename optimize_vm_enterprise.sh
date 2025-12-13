@@ -236,10 +236,18 @@ deep_cpu_benchmark() {
     fi
     
     # Sysbench CPU测试 - 单线程性能
-    log_progress "执行Sysbench单线程CPU测试（素数计算）..."
+    # 注意：spiritLHLS/ecs使用5秒测试，我们使用10秒更准确
+    # 如需与ecs项目完全一致，请改为--time=5
+    log_progress "执行Sysbench单线程CPU测试（素数计算，10秒标准测试）..."
     local cpu_single_score=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=10 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
     PERFORMANCE_DATA[cpu_single_thread]=${cpu_single_score:-0}
     log_success "单线程性能分数: ${cpu_single_score} events/sec"
+    
+    # 同时执行5秒快速测试用于对比（与spiritLHLS/ecs一致）
+    log_progress "执行5秒快速测试（与spiritLHLS/ecs完全一致）..."
+    local cpu_single_5s=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
+    PERFORMANCE_DATA[cpu_single_5s]=${cpu_single_5s:-0}
+    log_success "5秒快速测试得分: ${cpu_single_5s} events/sec (对标spiritLHLS/ecs)"
     
     # Sysbench CPU测试 - 多线程性能
     log_progress "执行Sysbench多线程CPU测试..."
@@ -323,8 +331,10 @@ deep_cpu_benchmark() {
     fi
     
     log_success "CPU综合性能评分: ${PERFORMANCE_DATA[cpu_score]}/100"
-    log_info "Sysbench单线程得分: ${PERFORMANCE_DATA[cpu_single_score]} Scores"
-    log_info "Sysbench多线程得分: ${PERFORMANCE_DATA[cpu_multi_score]} Scores"
+    log_info "Sysbench单线程得分(10秒): ${PERFORMANCE_DATA[cpu_single_score]} Scores"
+    log_info "Sysbench单线程得分(5秒):  ${PERFORMANCE_DATA[cpu_single_5s]} Scores ⭐对标ecs"
+    log_info "Sysbench多线程得分: ${PERFORMANCE_DATA[cpu_multi_thread]} Scores"
+    log_warn "注意：spiritLHLS/ecs使用5秒测试，本脚本额外提供10秒更准确的结果"
     log_info "评分标准: spiritLHLS/ecs 项目 (https://github.com/spiritLHLS/ecs)"
     
     # 给出性能等级评价（基于单线程分数）
@@ -820,18 +830,25 @@ deep_disk_benchmark() {
         local rand_read_norm=$(echo "scale=4; $disk_rand_read_iops / $baseline_rand_read_iops" | bc 2>/dev/null || echo "0.02")
         local rand_write_norm=$(echo "scale=4; $disk_rand_write_iops / $baseline_rand_write_iops" | bc 2>/dev/null || echo "0.02")
         
-        # 判断服务器SSD类型（基于性能数据）
+        # 判断服务器SSD类型（综合顺序速度和IOPS）
         local disk_rand_read=${PERFORMANCE_DATA[disk_rand_read_iops]:-1000}
-        if (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 5000" | bc -l) )); then
+        local seq_read=${PERFORMANCE_DATA[disk_seq_read]:-100}
+        
+        # 检测虚拟化环境特征：高顺序速度但低IOPS
+        if (( $(echo "$seq_read > 1000 && $disk_rand_read < 1000" | bc -l) )); then
+            SYSTEM_INFO[disk_category]="虚拟化环境 - 宿主机SSD但虚拟磁盘性能受限"
+        elif (( $(echo "$seq_read > 5000" | bc -l) )) && (( $(echo "$disk_rand_read > 200000" | bc -l) )); then
             SYSTEM_INFO[disk_category]="PCIe 4.0 NVMe 企业级SSD"
-        elif (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 3000" | bc -l) )); then
+        elif (( $(echo "$seq_read > 3000" | bc -l) )) && (( $(echo "$disk_rand_read > 100000" | bc -l) )); then
             SYSTEM_INFO[disk_category]="PCIe 3.0 NVMe 企业级SSD"
-        elif (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 1500" | bc -l) )); then
+        elif (( $(echo "$seq_read > 1500" | bc -l) )) && (( $(echo "$disk_rand_read > 50000" | bc -l) )); then
             SYSTEM_INFO[disk_category]="入门NVMe或高端企业SATA SSD"
-        elif (( $(echo "${PERFORMANCE_DATA[disk_seq_read]} > 400" | bc -l) )); then
+        elif (( $(echo "$seq_read > 400" | bc -l) )) && (( $(echo "$disk_rand_read > 30000" | bc -l) )); then
             SYSTEM_INFO[disk_category]="企业级SATA SSD"
+        elif (( $(echo "$disk_rand_read > 10000" | bc -l) )); then
+            SYSTEM_INFO[disk_category]="消费级SATA SSD"
         else
-            SYSTEM_INFO[disk_category]="消费级SATA SSD（不推荐用于服务器）"
+            SYSTEM_INFO[disk_category]="低端SSD或虚拟化受限环境"
         fi
         
     else
@@ -897,10 +914,15 @@ deep_disk_benchmark() {
     log_success "磁盘综合性能评分: ${PERFORMANCE_DATA[disk_score]}/100"
     log_info "顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
     log_info "顺序写入: ${PERFORMANCE_DATA[disk_seq_write]} MB/s"
-    log_info "4K随机读IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]}"
+    log_info "4K随机读IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]} ⭐服务器关键指标"
     log_info "4K随机写IOPS: ${PERFORMANCE_DATA[disk_rand_write_iops]}"
     log_info "识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
-    log_info "评分标准: spiritLHLS/ecs + FIO 标准"
+    log_warn "重要说明："
+    log_warn "  - 本脚本使用FIO direct模式（绕过缓存，测真实磁盘性能）"
+    log_warn "  - spiritLHLS/ecs的DD测试包含系统缓存（速度会虚高）"
+    log_warn "  - 若顺序速度高但IOPS低，说明是虚拟化环境或宿主机SSD虚拟盘"
+    log_warn "  - 服务器环境应关注4K IOPS，而非顺序速度"
+    log_info "评分标准: FIO专业测试（更准确）+ spiritLHLS/ecs参考"
     
     # 给出性能等级评价（基于4K随机读IOPS - 服务器最关键指标）
     local iops_read=$(echo "${PERFORMANCE_DATA[disk_rand_read_iops]}" | cut -d'.' -f1)
@@ -1384,7 +1406,7 @@ ${CYAN}spiritLHLS/ecs 项目${NC} - 知名VPS融合怪测评标准
   • 磁盘评分：FIO 4K IOPS + 顺序带宽双重标准
   • 数据积累：基于大量VPS实际测试数据
 
-${CYAN}测试工具（与ecs项目一致）${NC}
+${CYAN}测试工具（与ecs项目对标）${NC}
   • CPU：Sysbench CPU测试（素数计算）
   • 内存：Sysbench Memory（感谢Lemonbench）
   • 磁盘：FIO专业存储测试
@@ -1394,10 +1416,37 @@ ${CYAN}评分参考值${NC}
   • 内存读取：16000+ MB/s = DDR4-2400/2666 ECC
   • 磁盘4K读：10k+ IOPS = 入门SSD, 100k+ = 企业NVMe
 
-${YELLOW}注意：${NC}
-  本脚本评分标准完全对标spiritLHLS/ecs项目，确保评分结果
-  与VPS测评社区广泛使用的标准一致，便于横向对比。
-  标准化评分(0-100)用于虚拟内存优化算法的内部计算。
+${YELLOW}重要说明 - 为什么数据可能与spiritLHLS/ecs不同：${NC}
+
+${RED}1. CPU测试差异：${NC}
+   • spiritLHLS/ecs: 使用5秒快速测试（Fast Mode）
+   • 本脚本: 同时提供5秒和10秒测试，10秒更准确
+   • 请对比5秒测试结果，10秒测试分数会略低但更稳定
+
+${RED}2. 磁盘测试差异（最重要）：${NC}
+   • spiritLHLS/ecs: 使用DD测试（包含系统缓存，速度虚高）
+     例如：5.3 GB/s 实际是内存缓存速度，不是磁盘速度
+   • 本脚本: 使用FIO direct模式（绕过缓存，测真实性能）
+     例如：100 IOPS 才是真实的HDD随机读性能
+   
+   ${CYAN}DD测试 vs FIO测试对比：${NC}
+   DD测试（含缓存）:  5300 MB/s 读取速度 ← 这是假象！
+   FIO测试（真实）:   100 IOPS 4K随机读 ← 这才是真相！
+   
+   ${YELLOW}对于服务器环境，FIO测试的4K IOPS比DD顺序速度更有参考价值！${NC}
+
+${RED}3. 虚拟化环境特征：${NC}
+   如果您的测试显示：
+   • 顺序读写速度很高（>1000 MB/s）
+   • 但4K IOPS很低（<1000）
+   说明：宿主机使用SSD，但虚拟磁盘I/O性能被限制
+   
+${GREEN}总结：${NC}
+  本脚本提供更专业、更准确的性能测试（特别是磁盘IOPS）
+  适合服务器环境的真实性能评估和虚拟内存优化决策
+  
+  如需与spiritLHLS/ecs完全一致的结果，请对比5秒CPU测试分数
+  但建议以本脚本的FIO IOPS数据作为优化依据（更真实）
 
 EOF
 }
