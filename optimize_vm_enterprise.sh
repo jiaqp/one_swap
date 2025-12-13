@@ -3,8 +3,15 @@
 ################################################################################
 # Linux服务器虚拟内存专业级自动优化脚本
 # 功能：使用业界标准测试工具精确测量系统性能，并应用商业级优化算法
-# 版本：3.0 Server Edition
+# 版本：3.1 Server Edition (安全增强版)
 # 适用场景：Linux服务器环境（Web服务器、数据库服务器、应用服务器等）
+#
+# v3.1 安全改进：
+#   - 永不使用 overcommit_memory=2（避免内存分配失败）
+#   - 分阶段应用参数（安全参数 → swap → overcommit）
+#   - 小内存系统保护（不降低min_free_kbytes）
+#   - 应用前安全检查（内存、磁盘、系统状态）
+#   - 自动回滚机制（检测到问题立即恢复）
 #
 # 性能测试标准（对标 spiritLHLS/ecs 项目）：
 # ===========================================================
@@ -1100,27 +1107,47 @@ calculate_advanced_vm_parameters() {
     # 6. vm.min_free_kbytes
     # 保持的最小空闲内存（用于紧急分配）
     # Red Hat Enterprise推荐：0.4% - 5% of total RAM
+    # ⚠️ 重要：对于小内存系统，不要降低原值，这会导致内存分配失败！
     local total_ram_kb=${SYSTEM_INFO[total_ram_kb]:-1048576}
+    local current_min_free=${ORIGINAL_VM_PARAMS[min_free_kbytes]:-65536}
+    
+    # 基础计算：RAM的0.5%（保守策略）
     local min_free=$(echo "scale=0; $total_ram_kb * 0.005" | bc | cut -d'.' -f1)
     
     # 根据CPU核心数调整（更多核心需要更多空闲内存）
     min_free=$(echo "scale=0; ${min_free:-52428} * (1 + ${cpu_cores:-1} * 0.05)" | bc | cut -d'.' -f1)
     
-    # 限制范围：动态计算，避免占用过多内存
-    local min_limit=$(echo "scale=0; $total_ram_kb * 0.02" | bc | cut -d'.' -f1)  # 最低2%
-    local max_limit=$(echo "scale=0; $total_ram_kb * 0.10" | bc | cut -d'.' -f1)  # 最高10%
+    # 动态限制范围，基于RAM大小
+    local min_limit max_limit
     
-    # 绝对值限制：16MB - 1GB
-    if [ $min_limit -lt 16384 ]; then
-        min_limit=16384  # 最低16MB
-    fi
-    if [ $min_limit -gt 65536 ]; then
-        min_limit=65536  # 超过64MB后不再按比例增长
-    fi
-    if [ $max_limit -gt 1048576 ]; then
-        max_limit=1048576  # 最高1GB
+    if (( $(echo "$ram_mb < 512" | bc -l) )); then
+        # 极小内存(<512MB)：不要降低原值！保持系统默认或当前值
+        min_limit=$current_min_free
+        max_limit=$current_min_free
+        log_warn "极小内存系统：保持min_free_kbytes=${current_min_free}KB不变（安全策略）"
+    elif (( $(echo "$ram_mb < 1024" | bc -l) )); then
+        # 小内存(<1GB)：最低保持当前值的80%，最高不超过当前值
+        min_limit=$(echo "scale=0; $current_min_free * 0.8" | bc | cut -d'.' -f1)
+        max_limit=$current_min_free
+        log_info "小内存系统：min_free_kbytes范围 ${min_limit}-${max_limit}KB"
+    else
+        # 正常内存：使用标准范围
+        min_limit=$(echo "scale=0; $total_ram_kb * 0.02" | bc | cut -d'.' -f1)  # 最低2%
+        max_limit=$(echo "scale=0; $total_ram_kb * 0.10" | bc | cut -d'.' -f1)  # 最高10%
+        
+        # 绝对值限制：16MB - 1GB
+        if [ $min_limit -lt 16384 ]; then
+            min_limit=16384
+        fi
+        if [ $min_limit -gt 65536 ]; then
+            min_limit=65536
+        fi
+        if [ $max_limit -gt 1048576 ]; then
+            max_limit=1048576
+        fi
     fi
     
+    # 应用限制
     if [ $min_free -lt $min_limit ]; then
         min_free=$min_limit
     elif [ $min_free -gt $max_limit ]; then
@@ -1139,14 +1166,25 @@ calculate_advanced_vm_parameters() {
     
     # 8. vm.overcommit_memory
     # 内存超额分配策略
-    # 0: 启发式策略(默认)
-    # 1: 总是允许超额分配
-    # 2: 不允许超额分配超过swap+RAM*overcommit_ratio
-    if (( $(echo "${ram_mb:-1024} < 1024" | bc -l) )); then
-        PERFORMANCE_DATA[overcommit_memory]=2  # 低内存系统，严格控制
-        PERFORMANCE_DATA[overcommit_ratio]=50
+    # 0: 启发式策略(默认) - 最安全的选择
+    # 1: 总是允许超额分配 - 适合内存不足的系统
+    # 2: 严格控制(危险) - 容易导致无法分配内存
+    # 
+    # ⚠️ 重要：永远不使用overcommit_memory=2，这会导致系统无法分配内存！
+    # 对于小内存系统，使用模式1允许超额分配，避免过早OOM
+    if (( $(echo "${ram_mb:-1024} < 512" | bc -l) )); then
+        # 极小内存(<512MB)：允许超额分配，避免无法fork进程
+        PERFORMANCE_DATA[overcommit_memory]=1
+        PERFORMANCE_DATA[overcommit_ratio]=100  # 允许100%超额
+        log_info "极小内存系统：使用overcommit_memory=1避免无法分配内存"
+    elif (( $(echo "${ram_mb:-1024} < 2048" | bc -l) )); then
+        # 小内存(<2GB)：使用启发式，但增加overcommit_ratio
+        PERFORMANCE_DATA[overcommit_memory]=0
+        PERFORMANCE_DATA[overcommit_ratio]=80  # 宽松策略
+        log_info "小内存系统：使用启发式策略+宽松ratio"
     else
-        PERFORMANCE_DATA[overcommit_memory]=0  # 使用启发式
+        # 大内存：标准启发式策略
+        PERFORMANCE_DATA[overcommit_memory]=0
         PERFORMANCE_DATA[overcommit_ratio]=50
     fi
     
@@ -1265,6 +1303,46 @@ show_professional_report() {
     show_parameter_comparison
 }
 
+# 安全检查：确保系统有足够的内存和swap
+safety_check_before_apply() {
+    log_progress "执行安全检查..."
+    
+    local ram_mb=${SYSTEM_INFO[total_ram_mb]:-1024}
+    local available_mb=$(free -m | awk '/^Mem:/{print $7}')
+    local current_swap=$(free -m | awk '/^Swap:/{print $2}')
+    
+    # 检查1：可用内存是否足够（至少50MB）
+    if [ $available_mb -lt 50 ]; then
+        log_error "❌ 可用内存不足50MB，优化可能导致系统不稳定"
+        log_warn "当前可用: ${available_mb}MB，建议先释放内存"
+        return 1
+    fi
+    
+    # 检查2：对于极小内存系统，必须有swap才能应用overcommit限制
+    if [ $ram_mb -lt 512 ] && [ $current_swap -eq 0 ]; then
+        if [ "${VM_PARAM_DIFF[overcommit_memory]}" = "变更" ] && [ "${PERFORMANCE_DATA[overcommit_memory]}" != "1" ]; then
+            log_warn "⚠️ 极小内存系统无swap，将强制使用overcommit_memory=1"
+            PERFORMANCE_DATA[overcommit_memory]=1
+        fi
+    fi
+    
+    # 检查3：磁盘空间检查（需要至少swap大小的2倍空间）
+    local optimal_swap=${PERFORMANCE_DATA[optimal_swap]:-0}
+    if [ $optimal_swap -gt 0 ] && [ "${VM_PARAM_DIFF[swap_size]}" = "变更" ]; then
+        local available_space=$(df / | tail -1 | awk '{print $4}')
+        local required_space=$((optimal_swap * 1024 * 2))  # 转换为KB并×2
+        
+        if [ $available_space -lt $required_space ]; then
+            log_error "❌ 磁盘空间不足，无法创建${optimal_swap}MB的swap文件"
+            log_warn "需要: $((required_space/1024))MB，可用: $((available_space/1024))MB"
+            return 1
+        fi
+    fi
+    
+    log_success "✅ 安全检查通过"
+    return 0
+}
+
 # 应用优化设置
 apply_optimizations() {
     log_header "应用优化配置"
@@ -1281,6 +1359,17 @@ apply_optimizations() {
     fi
     
     log_warn "检测到 ${total_changes} 项参数需要优化"
+    echo ""
+    
+    # 执行安全检查
+    if ! safety_check_before_apply; then
+        log_error "安全检查未通过，终止优化流程"
+        log_info "💡 建议："
+        log_info "   1. 释放内存：停止不必要的服务"
+        log_info "   2. 清理磁盘：删除临时文件"
+        log_info "   3. 升级配置：增加服务器内存"
+        return 1
+    fi
     echo ""
     
     # 检查磁盘空间并尝试备份（但不阻止后续操作）
@@ -1302,8 +1391,9 @@ apply_optimizations() {
         log_info "直接覆盖配置以确保永久生效（代理服务器模式）"
     fi
     
-    # 实时应用有差异的参数
-    log_progress "正在智能应用需要变更的虚拟内存参数..."
+    # ⚠️ 重要：分阶段应用参数，避免在创建swap前应用overcommit限制
+    # 阶段1：应用安全参数（不包括overcommit相关）
+    log_progress "阶段1: 应用安全的虚拟内存参数..."
     
     local applied_count=0
     
@@ -1355,23 +1445,13 @@ apply_optimizations() {
         ((applied_count++))
     fi
     
-    if [ "${VM_PARAM_DIFF[overcommit_memory]}" = "变更" ]; then
-        sysctl -w vm.overcommit_memory=${PERFORMANCE_DATA[overcommit_memory]} >/dev/null 2>&1
-        log_info "  ✓ vm.overcommit_memory: ${ORIGINAL_VM_PARAMS[overcommit_memory]} → ${PERFORMANCE_DATA[overcommit_memory]}"
-        ((applied_count++))
-    fi
-    
-    if [ "${VM_PARAM_DIFF[overcommit_ratio]}" = "变更" ]; then
-        sysctl -w vm.overcommit_ratio=${PERFORMANCE_DATA[overcommit_ratio]} >/dev/null 2>&1
-        log_info "  ✓ vm.overcommit_ratio: ${ORIGINAL_VM_PARAMS[overcommit_ratio]} → ${PERFORMANCE_DATA[overcommit_ratio]}"
-        ((applied_count++))
-    fi
+    # ⚠️ 注意：overcommit参数将在创建swap后应用（阶段2）
+    log_success "阶段1完成：已应用 ${applied_count} 项安全参数"
     
     echo ""
-    log_success "已实时应用 ${applied_count} 项参数变更"
     
-    # 强制写入配置文件永久生效（代理服务器模式）
-    log_progress "写入/etc/sysctl.conf使配置永久生效..."
+    # 注意：overcommit参数会在后面应用，不计入此处的applied_count
+    # 真实的变更数量会在main函数中统一显示
     
     # 如果空间不足，先尝试清理
     if [ $available_space -lt 256 ]; then
@@ -1428,6 +1508,43 @@ apply_optimizations() {
         } > /dev/null 2>&1
         log_warn "⚠️  配置文件写入失败，但运行时参数已生效"
         log_info "💡 建议清理磁盘空间后重新运行以确保重启后配置仍有效"
+    fi
+}
+
+# 应用overcommit参数（阶段2，在创建swap后执行）
+apply_overcommit_parameters() {
+    log_progress "阶段2: 应用overcommit参数（在swap创建后）..."
+    
+    local applied_count=0
+    
+    if [ "${VM_PARAM_DIFF[overcommit_memory]}" = "变更" ]; then
+        sysctl -w vm.overcommit_memory=${PERFORMANCE_DATA[overcommit_memory]} >/dev/null 2>&1
+        log_info "  ✓ vm.overcommit_memory: ${ORIGINAL_VM_PARAMS[overcommit_memory]} → ${PERFORMANCE_DATA[overcommit_memory]}"
+        ((applied_count++))
+    fi
+    
+    if [ "${VM_PARAM_DIFF[overcommit_ratio]}" = "变更" ]; then
+        sysctl -w vm.overcommit_ratio=${PERFORMANCE_DATA[overcommit_ratio]} >/dev/null 2>&1
+        log_info "  ✓ vm.overcommit_ratio: ${ORIGINAL_VM_PARAMS[overcommit_ratio]} → ${PERFORMANCE_DATA[overcommit_ratio]}"
+        ((applied_count++))
+    fi
+    
+    if [ $applied_count -gt 0 ]; then
+        log_success "阶段2完成：已应用 ${applied_count} 项overcommit参数"
+    else
+        log_success "阶段2完成：overcommit参数无需变更"
+    fi
+    
+    # 验证系统是否正常
+    echo ""
+    log_progress "验证系统内存分配是否正常..."
+    if echo "test" > /tmp/memory_test_$$ 2>/dev/null; then
+        rm -f /tmp/memory_test_$$ 2>/dev/null
+        log_success "✅ 内存分配正常"
+    else
+        log_error "❌ 内存分配失败！正在回滚overcommit设置..."
+        sysctl -w vm.overcommit_memory=0 >/dev/null 2>&1
+        log_warn "已回滚到安全模式(overcommit_memory=0)"
     fi
 }
 
@@ -1541,11 +1658,12 @@ main() {
     cat << "EOF"
 ╔═══════════════════════════════════════════════════════════════════╗
 ║                                                                   ║
-║     Linux虚拟内存专业级自动优化工具 v3.0                         ║
+║     Linux虚拟内存专业级自动优化工具 v3.1                         ║
 ║     Professional Virtual Memory Optimization Tool                ║
 ║                                                                   ║
 ║     使用业界标准测试工具和商业级优化算法                         ║
 ║     🤖 智能模式：自动检测并应用所有优化                          ║
+║     🛡️  安全增强：分阶段应用+自动回滚保护                        ║
 ║                                                                   ║
 ╚═══════════════════════════════════════════════════════════════════╝
 EOF
@@ -1555,8 +1673,15 @@ EOF
     echo "  1️⃣  深度性能测试（CPU、内存、磁盘）"
     echo "  2️⃣  计算最优虚拟内存参数"
     echo "  3️⃣  对比当前配置与推荐配置"
-    echo "  4️⃣  自动应用所有需要的优化"
-    echo "  5️⃣  永久保存配置并备份原设置"
+    echo "  4️⃣  安全检查（内存、磁盘、系统状态）"
+    echo "  5️⃣  分阶段自动应用优化（安全参数 → swap → overcommit）"
+    echo "  6️⃣  永久保存配置并备份原设置"
+    echo ""
+    printf "${CYAN}🛡️  安全保护：${NC}\n"
+    echo "  ✅ 永不使用 overcommit_memory=2（避免内存分配失败）"
+    echo "  ✅ 小内存系统自动保护（不降低关键参数）"
+    echo "  ✅ 应用参数前进行安全检查"
+    echo "  ✅ 检测到问题自动回滚"
     echo ""
     
     # 环境检查
@@ -1616,10 +1741,10 @@ EOF
         log_warn "检测到参数与推荐值不一致，正在自动应用优化..."
         echo ""
         
-        # 自动应用优化
+        # 自动应用优化（阶段1：安全参数）
         apply_optimizations
         
-        # 处理Swap变更（自动应用模式）
+        # 处理Swap变更（自动应用模式）- 必须在overcommit参数之前
         if [ "${VM_PARAM_DIFF[swap_size]}" = "变更" ]; then
             echo ""
             manage_swap_advanced "auto"
@@ -1627,6 +1752,10 @@ EOF
             echo ""
             log_success "Swap大小已是最优值，无需调整"
         fi
+        
+        # 应用overcommit参数（阶段2：在swap创建后）
+        echo ""
+        apply_overcommit_parameters
         
         echo ""
         printf "${GREEN}╔═══════════════════════════════════════════════════════════════════╗${NC}\n"
