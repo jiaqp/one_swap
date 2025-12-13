@@ -114,7 +114,7 @@ sudo sysctl -p
 
 **步骤2: 下载新版本**
 ```bash
-wget https://raw.githubusercontent.com/jiaqp/release_temp/refs/heads/main/optimize_vm_enterprise.sh
+wget https://raw.githubusercontent.com/jiaqp/one_swap/refs/heads/main/optimize_vm_enterprise.sh
 ```
 
 **步骤3: 运行新版本**
