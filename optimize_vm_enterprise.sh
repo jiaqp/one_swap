@@ -20,7 +20,7 @@
 #     * 中高端服务器:         1200-1800 Scores
 #     * 高端服务器:           1800-2500 Scores
 #     * 顶级服务器:           2500+ Scores
-#   - 测试命令：sysbench cpu --cpu-max-prime=20000 --threads=1 --time=10 run
+#   - 测试命令：sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run
 #   - 数据来源：spiritLHLS/ecs 项目实际测试数据积累
 #
 # 内存性能评分：使用 Sysbench Memory + Lemonbench 标准
@@ -236,42 +236,33 @@ deep_cpu_benchmark() {
     fi
     
     # Sysbench CPU测试 - 单线程性能
-    # 注意：ecs项目可能使用不同的素数参数，导致分数差异
-    # 素数越小，计算越快，分数越高
-    
-    # 测试1：标准20000素数测试（更严格）
-    log_progress "执行Sysbench单线程CPU测试（素数20000，10秒标准测试）..."
-    local cpu_single_score=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=10 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
+    # 使用5秒 + 10000素数，与spiritLHLS/ecs项目对标
+    log_progress "执行Sysbench单线程CPU测试（5秒，素数10000）..."
+    local cpu_single_score=$(sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
     PERFORMANCE_DATA[cpu_single_thread]=${cpu_single_score:-0}
-    log_success "单线程性能分数(20000素数): ${cpu_single_score} events/sec"
+    log_success "单线程性能分数: ${cpu_single_score} events/sec ⭐对标ecs"
     
-    # 测试2：5秒快速测试（与ecs项目时长一致）
-    log_progress "执行5秒快速测试（素数20000）..."
-    local cpu_single_5s_20k=$(sysbench cpu --cpu-max-prime=20000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
-    PERFORMANCE_DATA[cpu_single_5s]=${cpu_single_5s_20k:-0}
-    log_success "5秒快速测试得分(20000素数): ${cpu_single_5s_20k} events/sec"
-    
-    # 测试3：尝试10000素数测试（可能更接近ecs项目）
-    log_progress "执行5秒测试（素数10000，可能更接近spiritLHLS/ecs）..."
-    local cpu_single_5s_10k=$(sysbench cpu --cpu-max-prime=10000 --threads=1 --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
-    PERFORMANCE_DATA[cpu_single_5s_10k]=${cpu_single_5s_10k:-0}
-    log_success "5秒测试得分(10000素数): ${cpu_single_5s_10k} events/sec ⭐可能接近ecs"
-    
-    # Sysbench CPU测试 - 多线程性能
-    log_progress "执行Sysbench多线程CPU测试..."
-    local cpu_multi_score=$(sysbench cpu --cpu-max-prime=20000 --threads=${SYSTEM_INFO[cpu_cores]} --time=10 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
-    PERFORMANCE_DATA[cpu_multi_thread]=${cpu_multi_score:-0}
-    log_success "多线程性能分数: ${cpu_multi_score} events/sec"
+    # Sysbench CPU测试 - 多线程性能（仅多核时测试）
+    if [ ${SYSTEM_INFO[cpu_cores]} -gt 1 ]; then
+        log_progress "执行Sysbench多线程CPU测试（5秒）..."
+        local cpu_multi_score=$(sysbench cpu --cpu-max-prime=10000 --threads=${SYSTEM_INFO[cpu_cores]} --time=5 run 2>/dev/null | grep "events per second:" | awk '{print $4}')
+        PERFORMANCE_DATA[cpu_multi_thread]=${cpu_multi_score:-0}
+        log_success "多线程性能分数: ${cpu_multi_score} events/sec"
+    else
+        # 单核CPU，多线程测试无意义
+        PERFORMANCE_DATA[cpu_multi_thread]=${cpu_single_score:-0}
+        log_info "单核CPU，跳过多线程测试"
+    fi
     
     # Stress-ng CPU整数运算测试
-    log_progress "执行Stress-ng整数运算测试..."
-    local int_ops=$(stress-ng --cpu ${SYSTEM_INFO[cpu_cores]} --cpu-method int64 --metrics-brief --timeout 10s 2>&1 | grep "cpu " | awk '{print $9}')
+    log_progress "执行Stress-ng整数运算测试（5秒）..."
+    local int_ops=$(stress-ng --cpu ${SYSTEM_INFO[cpu_cores]} --cpu-method int64 --metrics-brief --timeout 5s 2>&1 | grep "cpu " | awk '{print $9}')
     PERFORMANCE_DATA[cpu_int_ops]=${int_ops:-0}
     log_success "整数运算能力: ${int_ops} bogo ops/sec"
     
     # Stress-ng CPU浮点运算测试
-    log_progress "执行Stress-ng浮点运算测试..."
-    local float_ops=$(stress-ng --cpu ${SYSTEM_INFO[cpu_cores]} --cpu-method double --metrics-brief --timeout 10s 2>&1 | grep "cpu " | awk '{print $9}')
+    log_progress "执行Stress-ng浮点运算测试（5秒）..."
+    local float_ops=$(stress-ng --cpu ${SYSTEM_INFO[cpu_cores]} --cpu-method double --metrics-brief --timeout 5s 2>&1 | grep "cpu " | awk '{print $9}')
     PERFORMANCE_DATA[cpu_float_ops]=${float_ops:-0}
     log_success "浮点运算能力: ${float_ops} bogo ops/sec"
     
@@ -279,7 +270,7 @@ deep_cpu_benchmark() {
     # 使用Sysbench原始分数（events/sec）作为评分标准
     # 参考：https://github.com/spiritLHLS/ecs
     # 
-    # Sysbench CPU 评分参考值（单线程 @10sec）：
+    # Sysbench CPU 评分参考值（单线程 @5sec, 10000素数）：
     #   低端VPS/老旧CPU:      200-500 Scores
     #   入门服务器:           500-800 Scores
     #   主流服务器:           800-1200 Scores
@@ -339,51 +330,27 @@ deep_cpu_benchmark() {
     fi
     
     log_success "CPU综合性能评分: ${PERFORMANCE_DATA[cpu_score]}/100"
-    echo ""
-    log_info "📊 CPU测试结果对比："
-    log_info "  10秒标准测试(素数20000): ${PERFORMANCE_DATA[cpu_single_score]} Scores"
-    log_info "  5秒快速测试(素数20000):  ${PERFORMANCE_DATA[cpu_single_5s]} Scores"
-    log_info "  5秒测试(素数10000):      ${PERFORMANCE_DATA[cpu_single_5s_10k]} Scores ⭐可能接近ecs"
-    log_info "  多线程测试:              ${PERFORMANCE_DATA[cpu_multi_thread]} Scores"
-    echo ""
-    log_warn "💡 重要说明："
-    log_warn "  - 您的ecs测试结果：802 Scores"
-    log_warn "  - 如果10000素数测试接近800分，说明ecs用的是10000素数参数"
-    log_warn "  - 素数参数越小，计算越快，分数越高（但不代表CPU更强）"
-    log_warn "  - 建议：以20000素数测试为准（更标准，更能反映真实性能）"
-    echo ""
-    log_info "评分标准: spiritLHLS/ecs 项目 (https://github.com/spiritLHLS/ecs)"
-    
-    # 给出性能等级评价（优先使用10000素数测试结果，更接近ecs标准）
-    local cpu_single_10k=$(echo "${PERFORMANCE_DATA[cpu_single_5s_10k]}" | cut -d'.' -f1)
-    local cpu_single_20k=$(echo "${PERFORMANCE_DATA[cpu_single_score]}" | cut -d'.' -f1)
-    
-    echo ""
-    log_info "📈 性能等级评估（基于素数10000测试，对标ecs）："
-    
-    if [ $cpu_single_10k -lt 500 ]; then
-        log_warn "性能等级: 低端VPS/老旧CPU (200-500 Scores)"
-        log_warn "建议：此性能级别不适合生产环境，建议升级"
-        log_warn "适用场景：轻量级应用、测试环境、个人博客"
-    elif [ $cpu_single_10k -lt 800 ]; then
-        log_info "性能等级: 入门服务器 (500-800 Scores)"
-        log_info "适用场景：小型Web服务、开发测试、轻量级应用"
-    elif [ $cpu_single_10k -lt 1200 ]; then
-        log_info "性能等级: 主流服务器 (800-1200 Scores)"
-        log_info "适用场景：中型Web应用、小型数据库、API服务器"
-    elif [ $cpu_single_10k -lt 1800 ]; then
-        log_info "性能等级: 中高端服务器 (1200-1800 Scores)"
-        log_info "适用场景：大型数据库、虚拟化平台、高并发应用"
-    elif [ $cpu_single_10k -lt 2500 ]; then
-        log_info "性能等级: 高端服务器 (1800-2500 Scores)"
-        log_info "适用场景：数据分析、机器学习、高性能计算"
-    else
-        log_info "性能等级: 顶级服务器 (2500+ Scores)"
-        log_info "适用场景：超大规模云计算、AI训练、核心业务系统"
+    log_info "Sysbench单线程: ${PERFORMANCE_DATA[cpu_single_thread]} Scores (对标ecs)"
+    if [ ${SYSTEM_INFO[cpu_cores]} -gt 1 ]; then
+        log_info "Sysbench多线程: ${PERFORMANCE_DATA[cpu_multi_thread]} Scores"
     fi
     
-    echo ""
-    log_info "注：虚拟内存优化算法将使用20000素数测试结果（更准确）"
+    # 给出性能等级评价
+    local cpu_single_score=$(echo "${PERFORMANCE_DATA[cpu_single_thread]}" | cut -d'.' -f1)
+    
+    if [ $cpu_single_score -lt 500 ]; then
+        log_warn "性能等级: 低端VPS/老旧CPU (<500)"
+    elif [ $cpu_single_score -lt 800 ]; then
+        log_info "性能等级: 入门服务器 (500-800)"
+    elif [ $cpu_single_score -lt 1200 ]; then
+        log_info "性能等级: 主流服务器 (800-1200)"
+    elif [ $cpu_single_score -lt 1800 ]; then
+        log_info "性能等级: 中高端服务器 (1200-1800)"
+    elif [ $cpu_single_score -lt 2500 ]; then
+        log_info "性能等级: 高端服务器 (1800-2500)"
+    else
+        log_info "性能等级: 顶级服务器 (2500+)"
+    fi
 }
 
 # 深度内存性能测试
@@ -431,7 +398,7 @@ deep_memory_benchmark() {
     
     # Stress-ng内存压力测试（测试内存稳定性和真实带宽）
     log_progress "执行Stress-ng内存带宽测试..."
-    local mem_bandwidth=$(stress-ng --vm ${SYSTEM_INFO[cpu_cores]} --vm-bytes 80% --vm-method all --metrics-brief --timeout 10s 2>&1 | grep "vm " | awk '{print $9}')
+    local mem_bandwidth=$(stress-ng --vm ${SYSTEM_INFO[cpu_cores]} --vm-bytes 80% --vm-method all --metrics-brief --timeout 5s 2>&1 | grep "vm " | awk '{print $9}')
     PERFORMANCE_DATA[mem_bandwidth]=${mem_bandwidth:-0}
     log_success "内存带宽测试: ${mem_bandwidth} bogo ops/sec"
     
@@ -526,31 +493,23 @@ deep_memory_benchmark() {
     fi
     
     log_success "内存综合性能评分: ${PERFORMANCE_DATA[mem_score]}/100"
-    log_info "单线程读取速度: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s"
-    log_info "单线程写入速度: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s"
+    log_info "读取/写入: ${PERFORMANCE_DATA[mem_read_bandwidth]}/${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s"
     log_info "识别等级: ${SYSTEM_INFO[mem_category]:-未识别}"
-    log_info "评分标准: spiritLHLS/ecs + Lemonbench 标准"
     
     # 给出性能等级评价（基于读取带宽）
     local mem_read_int=$(echo "${PERFORMANCE_DATA[mem_read_bandwidth]}" | cut -d'.' -f1)
     if [ $mem_read_int -lt 11000 ]; then
-        log_warn "性能等级: 低端内存 (DDR3-1333/1600)"
-        log_warn "建议：升级到DDR4或更高标准"
+        log_warn "性能等级: 低端内存 (DDR3)"
     elif [ $mem_read_int -lt 15000 ]; then
-        log_info "性能等级: 入门服务器内存 (DDR3-1866 或 DDR4-2133 ECC)"
-        log_info "适用场景：轻量Web服务、开发测试、小型应用"
+        log_info "性能等级: 入门服务器 (DDR3-1866 / DDR4-2133)"
     elif [ $mem_read_int -lt 17000 ]; then
-        log_info "性能等级: 主流服务器内存 (DDR4-2400 ECC)"
-        log_info "适用场景：Web服务器、小型数据库、API服务"
+        log_info "性能等级: 主流服务器 (DDR4-2400)"
     elif [ $mem_read_int -lt 20000 ]; then
-        log_info "性能等级: 中高端服务器内存 (DDR4-2666 ECC)"
-        log_info "适用场景：中大型数据库、虚拟化、高并发应用"
+        log_info "性能等级: 中高端服务器 (DDR4-2666)"
     elif [ $mem_read_int -lt 25000 ]; then
-        log_info "性能等级: 高端服务器内存 (DDR4-3200 ECC)"
-        log_info "适用场景：大规模数据处理、内存数据库、HPC"
+        log_info "性能等级: 高端服务器 (DDR4-3200)"
     else
-        log_info "性能等级: 顶级服务器内存 (DDR5-4800+ ECC)"
-        log_info "适用场景：超大规模云计算、AI训练、内存密集型应用"
+        log_info "性能等级: 顶级服务器 (DDR5-4800+)"
     fi
 }
 
@@ -1039,31 +998,15 @@ deep_disk_benchmark() {
     fi
     
     log_success "磁盘综合性能评分: ${PERFORMANCE_DATA[disk_score]}/100"
-    echo ""
-    log_info "📊 磁盘性能测试结果："
-    log_info "  顺序读取: ${PERFORMANCE_DATA[disk_seq_read]} MB/s"
-    log_info "  顺序写入: ${PERFORMANCE_DATA[disk_seq_write]} MB/s"
-    log_info "  4K随机读IOPS: ${PERFORMANCE_DATA[disk_rand_read_iops]} ⭐服务器关键指标"
-    log_info "  4K随机写IOPS: ${PERFORMANCE_DATA[disk_rand_write_iops]}"
-    log_info "  识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
+    log_info "顺序读/写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s"
+    log_info "4K IOPS 读/写: ${PERFORMANCE_DATA[disk_rand_read_iops]}/${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐关键指标"
+    log_info "识别等级: ${SYSTEM_INFO[disk_category]:-未识别}"
     
     # 显示虚拟化环境检测结果
-    echo ""
-    if [ "${SYSTEM_INFO[is_virtualized]}" = "是" ] || [ "${SYSTEM_INFO[is_virtualized]}" = "是（SSD虚拟化受限）" ]; then
-        log_warn "🔍 虚拟化环境检测："
-        log_warn "  检测结果: ${SYSTEM_INFO[is_virtualized]}"
-        log_warn "  ${PERFORMANCE_DATA[disk_virt_warning]}"
-        log_warn "  说明: 顺序速度测到宿主机性能，但IOPS受虚拟化层限制"
-        log_warn "  影响: 实际4K随机性能才是虚拟机真实磁盘性能"
-        log_warn "  评分: 已根据IOPS限制评分（不受虚高的顺序速度影响）"
-    else
-        log_info "🔍 虚拟化环境检测: ${SYSTEM_INFO[is_virtualized]}"
+    if [ "${SYSTEM_INFO[is_virtualized]}" != "否" ]; then
+        log_warn "虚拟化环境: ${SYSTEM_INFO[is_virtualized]}"
+        log_warn "${PERFORMANCE_DATA[disk_virt_warning]}"
     fi
-    
-    echo ""
-    log_warn "💡 重要说明："
-    log_warn "  - 本脚本使用FIO direct模式（绕过缓存，测真实磁盘性能）"
-    log_warn "  - spiritLHLS/ecs的DD测试包含系统缓存（速度会虚高）"
     log_warn "  - 服务器环境应关注4K IOPS，而非顺序速度"
     log_warn "  - 虚拟化环境的顺序速度仅供参考，IOPS才是真实性能"
     echo ""
@@ -1462,36 +1405,23 @@ ${CYAN}╔═══════════════════════�
 ║                     系统硬件配置信息                              ║
 ╚═══════════════════════════════════════════════════════════════════╝${NC}
 
-${YELLOW}CPU信息 (Sysbench标准):${NC}
-  型号:        ${SYSTEM_INFO[cpu_model]}
-  核心数:      ${SYSTEM_INFO[cpu_cores]} 核心
-  最大频率:    ${SYSTEM_INFO[cpu_max_freq]} MHz
-  ${CYAN}单线程(素数20000): ${PERFORMANCE_DATA[cpu_single_score]} Scores${NC}
-  ${CYAN}单线程(素数10000): ${PERFORMANCE_DATA[cpu_single_5s_10k]} Scores ⭐对标ecs${NC}
-  ${CYAN}多线程得分:        ${PERFORMANCE_DATA[cpu_multi_score]} Scores${NC}
-  标准化评分:  ${PERFORMANCE_DATA[cpu_score]}/100
+${YELLOW}CPU (Sysbench):${NC}
+  ${SYSTEM_INFO[cpu_model]}
+  ${SYSTEM_INFO[cpu_cores]} 核心 @ ${SYSTEM_INFO[cpu_max_freq]} MHz
+  ${CYAN}测试得分: ${PERFORMANCE_DATA[cpu_single_thread]} Scores ⭐对标ecs${NC}
+  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100
 
-${YELLOW}内存信息 (Lemonbench标准):${NC}
-  总容量:      ${SYSTEM_INFO[total_ram_mb]} MB ($(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB)
-  类型:        ${SYSTEM_INFO[mem_type]:-Unknown}
-  速度:        ${SYSTEM_INFO[mem_speed]:-Unknown} MT/s
-  识别等级:    ${SYSTEM_INFO[mem_category]:-未识别}
-  ${CYAN}单线程读取:  ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s${NC}
-  ${CYAN}单线程写入:  ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}
-  标准化评分:  ${PERFORMANCE_DATA[mem_score]}/100
+${YELLOW}内存 (Lemonbench):${NC}
+  $(echo "scale=2; ${SYSTEM_INFO[total_ram_mb]}/1024" | bc) GB - ${SYSTEM_INFO[mem_category]:-未识别}
+  ${CYAN}读取: ${PERFORMANCE_DATA[mem_read_bandwidth]} MB/s  |  写入: ${PERFORMANCE_DATA[mem_write_bandwidth]} MB/s${NC}
+  标准化评分: ${PERFORMANCE_DATA[mem_score]}/100
 
-${YELLOW}磁盘信息 (FIO标准):${NC}
-  设备:        ${SYSTEM_INFO[disk_device]}
-  类型:        ${SYSTEM_INFO[disk_type]}
-  识别等级:    ${SYSTEM_INFO[disk_category]:-未识别}
-  虚拟化环境:  ${SYSTEM_INFO[is_virtualized]:-未检测}
-  ${CYAN}顺序读取:    ${PERFORMANCE_DATA[disk_seq_read]} MB/s${NC}
-  ${CYAN}顺序写入:    ${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}
-  ${CYAN}4K随机读:    ${PERFORMANCE_DATA[disk_rand_read_iops]} IOPS ⭐真实性能${NC}
-  ${CYAN}4K随机写:    ${PERFORMANCE_DATA[disk_rand_write_iops]} IOPS${NC}
-  混合读写:    ${PERFORMANCE_DATA[disk_mixed_iops]} IOPS
-  平均延迟:    ${PERFORMANCE_DATA[disk_latency]:-N/A} μs
-  标准化评分:  ${PERFORMANCE_DATA[disk_score]}/100
+${YELLOW}磁盘 (FIO):${NC}
+  ${SYSTEM_INFO[disk_device]} - ${SYSTEM_INFO[disk_type]} - ${SYSTEM_INFO[disk_category]:-未识别}
+  虚拟化: ${SYSTEM_INFO[is_virtualized]:-否}
+  ${CYAN}顺序读写: ${PERFORMANCE_DATA[disk_seq_read]}/${PERFORMANCE_DATA[disk_seq_write]} MB/s${NC}
+  ${CYAN}4K IOPS: 读${PERFORMANCE_DATA[disk_rand_read_iops]} / 写${PERFORMANCE_DATA[disk_rand_write_iops]} ⭐真实性能${NC}
+  标准化评分: ${PERFORMANCE_DATA[disk_score]}/100
 
 ${CYAN}╔═══════════════════════════════════════════════════════════════════╗
 ║                   商业级优化参数推荐                              ║
@@ -1538,27 +1468,13 @@ EOF
     # 虚拟化环境特殊提示
     if [ "${SYSTEM_INFO[is_virtualized]}" != "否" ]; then
         echo ""
-        echo -e "${RED}⚠️  虚拟化环境检测到：${NC}"
-        echo -e "${YELLOW}虚拟化状态: ${SYSTEM_INFO[is_virtualized]}${NC}"
+        echo -e "${RED}⚠️ 虚拟化环境：${SYSTEM_INFO[is_virtualized]}${NC}"
+        echo -e "${YELLOW}检测到: ${PERFORMANCE_DATA[disk_virt_warning]:-虚拟化环境特征}${NC}"
         echo ""
-        if [ "${PERFORMANCE_DATA[disk_virt_warning]}" != "" ]; then
-            echo -e "${YELLOW}${PERFORMANCE_DATA[disk_virt_warning]}${NC}"
-            echo ""
-        fi
-        echo -e "${CYAN}针对虚拟化环境的优化措施：${NC}"
-        echo "  ✅ 评分算法：降低顺序速度权重，以IOPS为准"
-        echo "     • 原因：虚拟化环境顺序速度受宿主机SSD影响，不代表真实性能"
-        echo "     • 实际：IOPS ${PERFORMANCE_DATA[disk_rand_read_iops]} 才是虚拟盘的真实能力"
-        echo ""
-        echo "  ✅ Swap大小：增加20%应对虚拟化IO波动"
-        echo "     • 原因：虚拟化环境IO性能不稳定，需要更大的缓冲空间"
-        echo ""
-        echo "  ✅ Swappiness：降低值避免频繁交换"
-        echo "     • 原因：虚拟磁盘IOPS有限，过度swap会严重影响性能"
-        echo ""
-        echo -e "${YELLOW}建议：${NC}"
-        echo "  • 如需高IOPS性能，建议联系服务商升级虚拟磁盘配置"
-        echo "  • 或考虑使用物理服务器/高性能云实例"
+        echo -e "${CYAN}已自动针对虚拟化优化：${NC}"
+        echo "  ✅ 评分以IOPS为准（忽略虚高的顺序速度）"
+        echo "  ✅ Swap增加20%应对IO波动"
+        echo "  ✅ Swappiness降低避免频繁交换（IOPS有限）"
     fi
     
     echo ""
@@ -1752,15 +1668,12 @@ CPU配置:
 ───────────────────────────────────────────────────────────────────────
 
 CPU性能测试 (Sysbench标准):
-  单线程(素数20000): ${PERFORMANCE_DATA[cpu_single_score]} Scores (标准测试)
-  单线程(素数10000): ${PERFORMANCE_DATA[cpu_single_5s_10k]} Scores (对标ecs)
-  多线程得分:        ${PERFORMANCE_DATA[cpu_multi_thread]} Scores
-  整数运算:          ${PERFORMANCE_DATA[cpu_int_ops]} ops/sec
-  浮点运算:          ${PERFORMANCE_DATA[cpu_float_ops]} ops/sec
-  标准化评分:        ${PERFORMANCE_DATA[cpu_score]}/100
-  评分参考:          spiritLHLS/ecs 项目标准
-  
-  说明: ecs项目可能使用10000素数，本脚本提供20000和10000两种测试
+  单线程测试: ${PERFORMANCE_DATA[cpu_single_thread]} Scores (对标ecs)
+  多线程得分: ${PERFORMANCE_DATA[cpu_multi_thread]} Scores
+  整数运算:   ${PERFORMANCE_DATA[cpu_int_ops]} ops/sec
+  浮点运算:   ${PERFORMANCE_DATA[cpu_float_ops]} ops/sec
+  标准化评分: ${PERFORMANCE_DATA[cpu_score]}/100
+  评分参考:   spiritLHLS/ecs 项目标准 (5秒, 素数10000)
 
 内存性能测试 (Lemonbench标准):
   识别等级:          ${SYSTEM_INFO[mem_category]:-未识别}
