@@ -64,7 +64,7 @@ get_unlock_ip() {
     local attempt=0
     
     while [ $attempt -lt $max_attempts ]; do
-        echo -n "解锁机IP [例如: 217.116.175.199]: "
+        echo -n "解锁机IP [例如: 203.0.113.100]: "
         
         # 尝试从/dev/tty读取，如果失败则从stdin读取
         if [ -e /dev/tty ]; then
@@ -107,7 +107,7 @@ get_unlock_ip() {
             fi
         else
             print_error "无效的IP地址格式，请重新输入"
-            print_info "IP地址格式示例: 192.168.1.1 或 217.116.175.199"
+            print_info "IP地址格式示例: 192.168.1.1 或 203.0.113.100"
         fi
     done
     
@@ -220,16 +220,10 @@ restore_systemd_resolved() {
         latest_backup=$(echo "$backup_files" | head -1)
         print_info "找到备份文件: $latest_backup"
         
-        read -p "是否恢复此备份？(y/n): " -n 1 -r </dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            rm -f /etc/resolv.conf
-            cp "$latest_backup" /etc/resolv.conf
-            print_success "已从备份恢复resolv.conf"
-        else
-            print_info "跳过备份恢复，将创建新配置"
-            create_new_resolv_conf
-        fi
+        print_info "自动恢复最新备份: $latest_backup"
+        rm -f /etc/resolv.conf
+        cp "$latest_backup" /etc/resolv.conf
+        print_success "已从备份恢复resolv.conf"
     else
         print_warning "未找到备份文件"
         create_new_resolv_conf
@@ -481,22 +475,15 @@ else
         exit 1
     fi
     
-    read -p "是否自动安装SmartDNS? (y/n): " -n 1 -r </dev/tty
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        if install_smartdns; then
-            print_success "SmartDNS安装成功"
-            
-            # 启用并启动服务
-            systemctl enable smartdns
-            print_success "SmartDNS已设置为开机自启"
-        else
-            print_error "SmartDNS安装失败"
-            exit 1
-        fi
+    print_info "自动安装SmartDNS..."
+    if install_smartdns; then
+        print_success "SmartDNS安装成功"
+        
+        # 启用并启动服务
+        systemctl enable smartdns
+        print_success "SmartDNS已设置为开机自启"
     else
-        print_error "SmartDNS未安装，无法继续"
-        print_info "请先安装SmartDNS: https://github.com/pymumu/smartdns"
+        print_error "SmartDNS安装失败"
         exit 1
     fi
 fi
@@ -537,57 +524,47 @@ check_and_fix_port_conflict() {
             return 1
         fi
         
-        read -p "是否自动禁用systemd-resolved并配置DNS？(y/n): " -n 1 -r </dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            print_info "停止systemd-resolved服务..."
-            systemctl stop systemd-resolved
-            
-            print_info "禁用systemd-resolved开机自启..."
-            systemctl disable systemd-resolved
-            
-            # 备份并配置resolv.conf
-            if [ -L /etc/resolv.conf ]; then
-                print_info "删除resolv.conf符号链接..."
-                rm /etc/resolv.conf
-            elif [ -f /etc/resolv.conf ]; then
-                print_info "备份原resolv.conf..."
-                mv /etc/resolv.conf /etc/resolv.conf.backup.$(date +%Y%m%d_%H%M%S)
-            fi
-            
-            # 创建新的resolv.conf
-            print_info "配置新的DNS解析..."
-            cat > /etc/resolv.conf << 'RESOLVEOF'
+        print_info "自动禁用systemd-resolved并配置DNS..."
+        print_info "停止systemd-resolved服务..."
+        systemctl stop systemd-resolved
+        
+        print_info "禁用systemd-resolved开机自启..."
+        systemctl disable systemd-resolved
+        
+        # 备份并配置resolv.conf
+        if [ -L /etc/resolv.conf ]; then
+            print_info "删除resolv.conf符号链接..."
+            rm /etc/resolv.conf
+        elif [ -f /etc/resolv.conf ]; then
+            print_info "备份原resolv.conf..."
+            mv /etc/resolv.conf /etc/resolv.conf.backup.$(date +%Y%m%d_%H%M%S)
+        fi
+        
+        # 创建新的resolv.conf
+        print_info "配置新的DNS解析..."
+        cat > /etc/resolv.conf << 'RESOLVEOF'
 # SmartDNS配置
 nameserver 127.0.0.1
 # 备用DNS（用于SmartDNS启动前）
 nameserver 1.1.1.1
 nameserver 8.8.8.8
 RESOLVEOF
-            
-            # 防止resolv.conf被自动修改
-            chattr +i /etc/resolv.conf 2>/dev/null || print_warning "无法锁定resolv.conf（可能不影响使用）"
-            
-            print_success "systemd-resolved已禁用"
-            print_success "DNS已配置为使用SmartDNS（127.0.0.1）"
-            
-            # 验证端口是否已释放
-            sleep 2
-            if lsof -i :53 2>/dev/null | grep -q ":53"; then
-                print_warning "端口53仍被占用，可能需要重启系统"
-            else
-                print_success "端口53已释放"
-            fi
-            
-            return 0
+        
+        # 防止resolv.conf被自动修改
+        chattr +i /etc/resolv.conf 2>/dev/null || print_warning "无法锁定resolv.conf（可能不影响使用）"
+        
+        print_success "systemd-resolved已禁用"
+        print_success "DNS已配置为使用SmartDNS（127.0.0.1）"
+        
+        # 验证端口是否已释放
+        sleep 2
+        if lsof -i :53 2>/dev/null | grep -q ":53"; then
+            print_warning "端口53仍被占用，可能需要重启系统"
         else
-            print_warning "用户选择不禁用systemd-resolved"
-            print_info "SmartDNS可能无法正常启动"
-            print_info "手动禁用命令："
-            echo "  sudo systemctl stop systemd-resolved"
-            echo "  sudo systemctl disable systemd-resolved"
-            return 1
+            print_success "端口53已释放"
         fi
+        
+        return 0
     else
         # 其他进程占用端口53
         print_warning "端口53被其他进程占用："
@@ -746,99 +723,87 @@ EOF
 
     # 步骤5: 安装配置文件到系统
     print_info "步骤5/5: 安装配置文件..."
-    read -p "是否要将配置文件安装到 /etc/smartdns/ ? (y/n): " -n 1 -r </dev/tty
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        if [ "$EUID" -ne 0 ]; then 
-            print_error "需要root权限来安装配置文件"
-            print_info "请使用 sudo 运行此脚本，或手动复制: sudo cp ${OUTPUT_FILE} /etc/smartdns/smartdns.conf"
-            exit 1
+    
+    if [ "$EUID" -ne 0 ]; then 
+        print_error "需要root权限来安装配置文件"
+        print_info "请使用 sudo 运行此脚本，或手动复制: sudo cp ${OUTPUT_FILE} /etc/smartdns/smartdns.conf"
+        exit 1
+    fi
+    
+    # 备份原配置
+    if [ -f /etc/smartdns/smartdns.conf ]; then
+        backup_file="/etc/smartdns/smartdns.conf.backup.$(date +%Y%m%d_%H%M%S)"
+        cp /etc/smartdns/smartdns.conf "${backup_file}"
+        print_success "原配置已备份到: ${backup_file}"
+    fi
+    
+    # 创建目录（如果不存在）
+    mkdir -p /etc/smartdns
+    
+    # 复制配置文件
+    cp "${OUTPUT_FILE}" /etc/smartdns/smartdns.conf
+    print_success "配置文件已安装到: /etc/smartdns/smartdns.conf"
+    
+    # 自动重启服务
+    print_info "自动重启SmartDNS服务..."
+    # 启动前再次检查端口
+    print_info "启动前端口检查..."
+    if lsof -i :53 2>/dev/null | grep -v smartdns | grep -q ":53"; then
+        print_warning "端口53仍被其他进程占用，尝试自动处理..."
+        lsof -i :53 2>/dev/null | grep -v smartdns
+        # 自动停止占用进程
+        systemctl stop systemd-resolved 2>/dev/null || true
+        sleep 1
+    fi
+    
+    print_info "正在重启SmartDNS服务..."
+    if systemctl restart smartdns; then
+        print_success "SmartDNS服务已重启"
+        sleep 2
+        
+        # 显示服务状态
+        systemctl status smartdns --no-pager
+        echo ""
+        
+        # 验证端口监听
+        print_info "验证SmartDNS监听状态..."
+        sleep 1
+        if ss -tulnp 2>/dev/null | grep smartdns | grep -q ":53"; then
+            print_success "SmartDNS正在监听端口53"
+            ss -tulnp 2>/dev/null | grep smartdns | grep ":53"
+        else
+            print_warning "SmartDNS可能未正常监听端口53"
+            print_info "请检查日志: journalctl -u smartdns -n 20"
         fi
         
-        # 备份原配置
-        if [ -f /etc/smartdns/smartdns.conf ]; then
-            backup_file="/etc/smartdns/smartdns.conf.backup.$(date +%Y%m%d_%H%M%S)"
-            cp /etc/smartdns/smartdns.conf "${backup_file}"
-            print_success "原配置已备份到: ${backup_file}"
-        fi
-        
-        # 创建目录（如果不存在）
-        mkdir -p /etc/smartdns
-        
-        # 复制配置文件
-        cp "${OUTPUT_FILE}" /etc/smartdns/smartdns.conf
-        print_success "配置文件已安装到: /etc/smartdns/smartdns.conf"
-        
-        # 询问是否重启服务
-        read -p "是否要重启SmartDNS服务? (y/n): " -n 1 -r </dev/tty
-        echo
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            # 启动前再次检查端口
-            print_info "启动前端口检查..."
-            if lsof -i :53 2>/dev/null | grep -v smartdns | grep -q ":53"; then
-                print_warning "端口53仍被其他进程占用"
-                lsof -i :53 2>/dev/null | grep -v smartdns
-                read -p "是否继续尝试启动? (y/n): " -n 1 -r </dev/tty
-                echo
-                if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                    print_info "已取消启动"
-                    exit 0
-                fi
-            fi
-            
-            print_info "正在重启SmartDNS服务..."
-            if systemctl restart smartdns; then
-                print_success "SmartDNS服务已重启"
-                sleep 2
-                
-                # 显示服务状态
-                systemctl status smartdns --no-pager
-                echo ""
-                
-                # 验证端口监听
-                print_info "验证SmartDNS监听状态..."
-                sleep 1
-                if ss -tulnp 2>/dev/null | grep smartdns | grep -q ":53"; then
-                    print_success "SmartDNS正在监听端口53"
-                    ss -tulnp 2>/dev/null | grep smartdns | grep ":53"
-                else
-                    print_warning "SmartDNS可能未正常监听端口53"
-                    print_info "请检查日志: journalctl -u smartdns -n 20"
-                fi
-                
-                echo ""
-                print_info "测试DNS解析..."
-                if command -v dig &> /dev/null; then
-                    if dig @127.0.0.1 google.com +short +time=2 &> /dev/null; then
-                        print_success "DNS解析测试通过"
-                        echo "测试结果: $(dig @127.0.0.1 google.com +short | head -1)"
-                    else
-                        print_warning "DNS解析测试失败，请检查配置"
-                    fi
-                elif command -v nslookup &> /dev/null; then
-                    if nslookup google.com 127.0.0.1 &> /dev/null; then
-                        print_success "DNS解析测试通过"
-                    else
-                        print_warning "DNS解析测试失败，请检查配置"
-                    fi
-                else
-                    print_info "建议安装dig工具测试: apt-get install dnsutils"
-                fi
+        echo ""
+        print_info "测试DNS解析..."
+        if command -v dig &> /dev/null; then
+            if dig @127.0.0.1 google.com +short +time=2 &> /dev/null; then
+                print_success "DNS解析测试通过"
+                echo "测试结果: $(dig @127.0.0.1 google.com +short | head -1)"
             else
-                print_error "SmartDNS服务重启失败"
-                echo ""
-                print_info "查看错误日志:"
-                journalctl -u smartdns -n 20 --no-pager
-                echo ""
-                print_info "故障排查建议："
-                echo "  1. 检查配置文件: cat /etc/smartdns/smartdns.conf"
-                echo "  2. 手动运行测试: smartdns -f -c /etc/smartdns/smartdns.conf"
-                echo "  3. 检查端口占用: lsof -i :53"
+                print_warning "DNS解析测试失败，请检查配置"
             fi
+        elif command -v nslookup &> /dev/null; then
+            if nslookup google.com 127.0.0.1 &> /dev/null; then
+                print_success "DNS解析测试通过"
+            else
+                print_warning "DNS解析测试失败，请检查配置"
+            fi
+        else
+            print_info "建议安装dig工具测试: apt-get install dnsutils"
         fi
     else
-        print_info "配置文件已保存在当前目录: ${OUTPUT_FILE}"
-        print_info "手动安装命令: sudo cp ${OUTPUT_FILE} /etc/smartdns/smartdns.conf"
+        print_error "SmartDNS服务重启失败"
+        echo ""
+        print_info "查看错误日志:"
+        journalctl -u smartdns -n 20 --no-pager
+        echo ""
+        print_info "故障排查建议："
+        echo "  1. 检查配置文件: cat /etc/smartdns/smartdns.conf"
+        echo "  2. 手动运行测试: smartdns -f -c /etc/smartdns/smartdns.conf"
+        echo "  3. 检查端口占用: lsof -i :53"
     fi
 
     print_success "脚本执行完成！"
