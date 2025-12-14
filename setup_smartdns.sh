@@ -671,12 +671,15 @@ EOF
     fi
 
     print_info "使用解锁IP: ${UNLOCK_IP}"
+    print_info "IP长度: ${#UNLOCK_IP} 字符"
     
     # 再次验证IP格式
     if ! validate_ip "$UNLOCK_IP"; then
         print_error "解锁机IP格式无效: $UNLOCK_IP"
         exit 1
     fi
+    
+    print_success "IP格式验证通过"
 
     # 添加分隔注释
     cat >> "${OUTPUT_FILE}" << EOF
@@ -703,8 +706,9 @@ EOF
             continue
         fi
         
-        # 生成address规则（一行完成）
-        printf "address /%s/%s\n" "$line" "$UNLOCK_IP" >> "${OUTPUT_FILE}"
+        # 生成address规则（最简单直接的方式）
+        address_line="address /${line}/${UNLOCK_IP}"
+        echo "${address_line}" >> "${OUTPUT_FILE}"
         ((processed_count++))
     done < "${TEMP_DOMAIN_FILE}"
 
