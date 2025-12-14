@@ -83,7 +83,8 @@ get_unlock_ip() {
         
         # 验证IP格式
         if validate_ip "$input_ip"; then
-            UNLOCK_IP="$input_ip"
+            # 清理IP地址，去除任何空白和换行符
+            UNLOCK_IP=$(echo "$input_ip" | tr -d '\r\n' | sed 's/[[:space:]]//g')
             print_success "解锁机IP已设置为: $UNLOCK_IP"
             
             # 确认
@@ -659,7 +660,9 @@ EOF
     # 步骤4: 将域名转换为address格式并追加到配置文件
     print_info "步骤4/5: 生成SmartDNS address规则..."
 
-    # 验证UNLOCK_IP不为空
+    # 验证并清理UNLOCK_IP
+    UNLOCK_IP=$(echo "$UNLOCK_IP" | tr -d '\r\n' | sed 's/[[:space:]]//g')
+    
     if [ -z "$UNLOCK_IP" ]; then
         print_error "解锁机IP未设置！"
         print_error "这是一个脚本错误，UNLOCK_IP变量为空"
@@ -668,6 +671,12 @@ EOF
     fi
 
     print_info "使用解锁IP: ${UNLOCK_IP}"
+    
+    # 再次验证IP格式
+    if ! validate_ip "$UNLOCK_IP"; then
+        print_error "解锁机IP格式无效: $UNLOCK_IP"
+        exit 1
+    fi
 
     # 添加分隔注释
     cat >> "${OUTPUT_FILE}" << EOF
@@ -679,21 +688,23 @@ EOF
 
     # 处理域名列表并追加到配置文件
     processed_count=0
-    while IFS= read -r line; do
-        # 去除首尾空白
-        line=$(echo "$line" | xargs 2>/dev/null || echo "")
+    while IFS= read -r line || [ -n "$line" ]; do
+        # 去除首尾空白和换行符
+        line=$(echo "$line" | tr -d '\r\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         
-        # 跳过空行和注释行
-        if [[ -z "$line" ]] || [[ "$line" =~ ^# ]]; then
-            # 如果是注释行，也添加到配置文件中（保留分类信息）
-            if [[ "$line" =~ ^# ]]; then
-                echo "$line" >> "${OUTPUT_FILE}"
-            fi
+        # 跳过空行
+        if [ -z "$line" ]; then
             continue
         fi
         
-        # 生成address规则
-        echo "address /${line}/${UNLOCK_IP}" >> "${OUTPUT_FILE}"
+        # 处理注释行
+        if [[ "$line" =~ ^# ]]; then
+            echo "$line" >> "${OUTPUT_FILE}"
+            continue
+        fi
+        
+        # 生成address规则（一行完成）
+        printf "address /%s/%s\n" "$line" "$UNLOCK_IP" >> "${OUTPUT_FILE}"
         ((processed_count++))
     done < "${TEMP_DOMAIN_FILE}"
 
