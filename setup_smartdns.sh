@@ -2,8 +2,6 @@
 # SmartDNS 管理脚本
 # 功能：安装/配置SmartDNS 或 恢复systemd-resolved
 
-set -e  # 遇到错误立即退出
-
 # 配置参数
 SMARTDNS_CONF_URL="https://raw.githubusercontent.com/pymumu/smartdns/master/etc/smartdns/smartdns.conf"
 DOMAIN_LIST_URL="https://raw.githubusercontent.com/1-stream/1stream-public-utils/refs/heads/main/stream.text.list"
@@ -64,7 +62,7 @@ get_unlock_ip() {
     
     while true; do
         echo -n "解锁机IP [例如: 217.116.175.199]: "
-        read -r input_ip
+        read -r input_ip </dev/tty
         
         # 如果用户直接回车，使用默认值
         if [ -z "$input_ip" ]; then
@@ -80,7 +78,7 @@ get_unlock_ip() {
             # 确认
             echo ""
             echo -n "确认使用此IP？(y/n): "
-            read -r -n 1 confirm
+            read -r -n 1 confirm </dev/tty
             echo ""
             if [[ $confirm =~ ^[Yy]$ ]]; then
                 break
@@ -194,7 +192,7 @@ restore_systemd_resolved() {
         latest_backup=$(echo "$backup_files" | head -1)
         print_info "找到备份文件: $latest_backup"
         
-        read -p "是否恢复此备份？(y/n): " -n 1 -r
+        read -p "是否恢复此备份？(y/n): " -n 1 -r </dev/tty
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             rm -f /etc/resolv.conf
@@ -455,7 +453,7 @@ else
         exit 1
     fi
     
-    read -p "是否自动安装SmartDNS? (y/n): " -n 1 -r
+    read -p "是否自动安装SmartDNS? (y/n): " -n 1 -r </dev/tty
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         if install_smartdns; then
@@ -511,7 +509,7 @@ check_and_fix_port_conflict() {
             return 1
         fi
         
-        read -p "是否自动禁用systemd-resolved并配置DNS？(y/n): " -n 1 -r
+        read -p "是否自动禁用systemd-resolved并配置DNS？(y/n): " -n 1 -r </dev/tty
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             print_info "停止systemd-resolved服务..."
@@ -683,7 +681,7 @@ EOF
 
     # 步骤5: 安装配置文件到系统
     print_info "步骤5/5: 安装配置文件..."
-    read -p "是否要将配置文件安装到 /etc/smartdns/ ? (y/n): " -n 1 -r
+    read -p "是否要将配置文件安装到 /etc/smartdns/ ? (y/n): " -n 1 -r </dev/tty
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         if [ "$EUID" -ne 0 ]; then 
@@ -707,7 +705,7 @@ EOF
         print_success "配置文件已安装到: /etc/smartdns/smartdns.conf"
         
         # 询问是否重启服务
-        read -p "是否要重启SmartDNS服务? (y/n): " -n 1 -r
+        read -p "是否要重启SmartDNS服务? (y/n): " -n 1 -r </dev/tty
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             # 启动前再次检查端口
@@ -715,7 +713,7 @@ EOF
             if lsof -i :53 2>/dev/null | grep -v smartdns | grep -q ":53"; then
                 print_warning "端口53仍被其他进程占用"
                 lsof -i :53 2>/dev/null | grep -v smartdns
-                read -p "是否继续尝试启动? (y/n): " -n 1 -r
+                read -p "是否继续尝试启动? (y/n): " -n 1 -r </dev/tty
                 echo
                 if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                     print_info "已取消启动"
@@ -786,24 +784,30 @@ EOF
 # 显示菜单并获取用户选择
 while true; do
     show_menu
-    read -r choice
+    read -r choice </dev/tty
+    
+    # 去除前后空格
+    choice=$(echo "$choice" | xargs 2>/dev/null || echo "")
     
     # 处理空输入
     if [ -z "$choice" ]; then
         echo ""
-        print_warning "请输入一个选项 (0-2)"
+        print_warning "您没有输入任何内容"
+        print_info "请输入 1（安装SmartDNS）、2（恢复系统默认）或 0（退出）"
         echo ""
-        read -p "按回车键继续..." -r
+        sleep 2
         continue
     fi
     
     # 处理用户选择
     case $choice in
         1)
+            echo ""
             install_and_configure_smartdns
             break
             ;;
         2)
+            echo ""
             restore_systemd_resolved
             break
             ;;
@@ -815,9 +819,9 @@ while true; do
         *)
             echo ""
             print_error "无效的选项: '$choice'"
-            print_warning "请输入 0、1 或 2"
+            print_warning "请输入数字 0、1 或 2"
             echo ""
-            read -p "按回车键继续..." -r
+            sleep 2
             continue
             ;;
     esac
