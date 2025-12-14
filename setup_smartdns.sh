@@ -784,27 +784,44 @@ EOF
 # ==================== 主程序入口 ====================
 
 # 显示菜单并获取用户选择
-show_menu
-read -r choice
-
-case $choice in
-    1)
-        install_and_configure_smartdns
-        ;;
-    2)
-        restore_systemd_resolved
-        ;;
-    0)
+while true; do
+    show_menu
+    read -r choice
+    
+    # 处理空输入
+    if [ -z "$choice" ]; then
         echo ""
-        print_info "已退出"
-        exit 0
-        ;;
-    *)
+        print_warning "请输入一个选项 (0-2)"
         echo ""
-        print_error "无效的选项"
-        exit 1
-        ;;
-esac
+        read -p "按回车键继续..." -r
+        continue
+    fi
+    
+    # 处理用户选择
+    case $choice in
+        1)
+            install_and_configure_smartdns
+            break
+            ;;
+        2)
+            restore_systemd_resolved
+            break
+            ;;
+        0)
+            echo ""
+            print_info "已退出"
+            exit 0
+            ;;
+        *)
+            echo ""
+            print_error "无效的选项: '$choice'"
+            print_warning "请输入 0、1 或 2"
+            echo ""
+            read -p "按回车键继续..." -r
+            continue
+            ;;
+    esac
+done
 
 echo ""
 echo "========================================"
