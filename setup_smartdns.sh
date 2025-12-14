@@ -60,13 +60,24 @@ get_unlock_ip() {
     print_info "（这是流媒体解锁服务器的IP地址）"
     echo ""
     
-    while true; do
+    local max_attempts=5
+    local attempt=0
+    
+    while [ $attempt -lt $max_attempts ]; do
         echo -n "解锁机IP [例如: 217.116.175.199]: "
-        read -r input_ip </dev/tty
         
-        # 如果用户直接回车，使用默认值
+        # 尝试从/dev/tty读取，如果失败则从stdin读取
+        if [ -e /dev/tty ]; then
+            read -r input_ip </dev/tty 2>/dev/null || read -r input_ip
+        else
+            read -r input_ip
+        fi
+        
+        ((attempt++))
+        
+        # 如果用户直接回车，提示重新输入
         if [ -z "$input_ip" ]; then
-            print_warning "未输入IP地址，请输入有效的IP"
+            print_warning "未输入IP地址，请输入有效的IP (尝试 $attempt/$max_attempts)"
             continue
         fi
         
@@ -78,18 +89,34 @@ get_unlock_ip() {
             # 确认
             echo ""
             echo -n "确认使用此IP？(y/n): "
-            read -r -n 1 confirm </dev/tty
+            if [ -e /dev/tty ]; then
+                read -r -n 1 confirm </dev/tty 2>/dev/null || read -r -n 1 confirm
+            else
+                read -r -n 1 confirm
+            fi
             echo ""
             if [[ $confirm =~ ^[Yy]$ ]]; then
+                # 导出变量确保在所有地方可用
+                export UNLOCK_IP
+                print_info "解锁IP已确认并设置"
                 break
             else
                 print_info "请重新输入"
+                attempt=$((attempt - 1))  # 不计入尝试次数
             fi
         else
             print_error "无效的IP地址格式，请重新输入"
             print_info "IP地址格式示例: 192.168.1.1 或 217.116.175.199"
         fi
     done
+    
+    # 验证UNLOCK_IP是否成功设置
+    if [ -z "$UNLOCK_IP" ]; then
+        print_error "未能成功设置解锁机IP"
+        print_error "已达到最大尝试次数或输入被中断"
+        exit 1
+    fi
+    
     echo ""
 }
 
@@ -632,18 +659,29 @@ EOF
     # 步骤4: 将域名转换为address格式并追加到配置文件
     print_info "步骤4/5: 生成SmartDNS address规则..."
 
+    # 验证UNLOCK_IP不为空
+    if [ -z "$UNLOCK_IP" ]; then
+        print_error "解锁机IP未设置！"
+        print_error "这是一个脚本错误，UNLOCK_IP变量为空"
+        print_info "当前UNLOCK_IP值: '${UNLOCK_IP}'"
+        exit 1
+    fi
+
+    print_info "使用解锁IP: ${UNLOCK_IP}"
+
     # 添加分隔注释
-    cat >> "${OUTPUT_FILE}" << 'EOF'
+    cat >> "${OUTPUT_FILE}" << EOF
 
 # ===== 流媒体解锁域名规则 =====
 # 自动生成，请勿手动修改此部分
+# 解锁IP: ${UNLOCK_IP}
 EOF
 
     # 处理域名列表并追加到配置文件
     processed_count=0
     while IFS= read -r line; do
         # 去除首尾空白
-        line=$(echo "$line" | xargs)
+        line=$(echo "$line" | xargs 2>/dev/null || echo "")
         
         # 跳过空行和注释行
         if [[ -z "$line" ]] || [[ "$line" =~ ^# ]]; then
