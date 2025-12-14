@@ -619,8 +619,11 @@ RESOLVEOF
     # 步骤2: 修改上游DNS服务器
     print_info "步骤2/5: 修改上游DNS服务器..."
 
-    # 删除原有的server配置（如果有）
+    # 删除原有的server和bind配置（避免冲突）
     sed -i '/^server /d' "${OUTPUT_FILE}"
+    sed -i '/^bind /d' "${OUTPUT_FILE}"
+    
+    print_info "已清理原配置中的server和bind配置"
 
     # 在配置文件开头添加新的DNS服务器配置
     cat > "${OUTPUT_FILE}.tmp" << 'EOF'
@@ -641,7 +644,16 @@ EOF
     cat "${OUTPUT_FILE}" >> "${OUTPUT_FILE}.tmp"
     mv "${OUTPUT_FILE}.tmp" "${OUTPUT_FILE}"
 
+    # 验证配置
+    local bind_count=$(grep -c "^bind " "${OUTPUT_FILE}")
+    local server_count=$(grep -c "^server " "${OUTPUT_FILE}")
+    
     print_success "上游DNS服务器已设置为 1.1.1.1 和 8.8.8.8"
+    print_info "配置验证: bind配置数=${bind_count}, server配置数=${server_count}"
+    
+    if [ "$bind_count" -gt 1 ]; then
+        print_warning "检测到多个bind配置，可能导致冲突"
+    fi
 
     # 步骤3: 下载并处理域名列表
     print_info "步骤3/5: 从URL下载域名列表并转换..."
