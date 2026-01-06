@@ -851,6 +851,7 @@ EOF
     echo ""
     echo "3. 确保防火墙开放 80 和 443 端口"
     echo ""
+    echo "解锁机一键脚本: curl -sSL https://raw.githubusercontent.com/hkfires/DNS-Unlock-Configer/main/install_sniproxy.sh | sudo bash"
     print_info "数据源: https://github.com/1-stream/1stream-public-utils"
     print_info "已配置 $(grep -c '^address ' /etc/smartdns/smartdns.conf) 个流媒体域名"
     echo ""
