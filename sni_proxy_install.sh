@@ -33,7 +33,17 @@ fi
 print_info "Root 权限检查通过。"
 
 print_info "检查依赖项 (curl)..."
+if ! command -v curl &> /dev/null; then
+    print_info "正在安装 curl..."
+    apt-get update -qq && apt-get install -y curl || yum install -y curl
+fi
 check_command "curl"
+print_info "检查依赖项 (jq)..."
+if ! command -v jq &> /dev/null; then
+    print_info "正在安装 jq..."
+    apt-get update -qq && apt-get install -y jq || yum install -y jq
+fi
+check_command "jq"
 print_info "所有依赖项已找到。"
 
 print_info "创建工作目录 $BASE_DIR..."
