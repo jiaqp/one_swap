@@ -14,6 +14,7 @@ fi
 CONFIG_FILE="/etc/transparent_proxy_config"
 REDSOCKS_CONF="/etc/redsocks.conf"
 REDSOCKS_PORT=12345
+DNS_BACKUP="/etc/resolv.conf.transparent_proxy_backup"
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -200,6 +201,50 @@ EOF
     echo -e "${GREEN}✓ 已生成 redsocks 配置文件${NC}"
 }
 
+# 检查代理是否正在运行
+check_proxy_status() {
+    if pgrep redsocks > /dev/null; then
+        return 0  # 运行中
+    else
+        return 1  # 未运行
+    fi
+}
+
+# 备份并设置 DNS 为国外 DNS
+setup_dns() {
+    echo "正在配置 DNS..."
+    
+    # 备份原 DNS 配置
+    if [ ! -f "$DNS_BACKUP" ]; then
+        cp /etc/resolv.conf "$DNS_BACKUP"
+        echo -e "${GREEN}✓ 已备份原 DNS 配置${NC}"
+    fi
+    
+    # 设置国外 DNS（Google DNS + Cloudflare DNS）
+    cat > /etc/resolv.conf << EOF
+# Configured by transparent_proxy.sh
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+nameserver 1.1.1.1
+nameserver 1.0.0.1
+EOF
+    
+    echo -e "${GREEN}✓ 已切换到国外 DNS (8.8.8.8, 1.1.1.1)${NC}"
+}
+
+# 恢复原 DNS 配置
+restore_dns() {
+    echo "正在恢复 DNS 配置..."
+    
+    if [ -f "$DNS_BACKUP" ]; then
+        cp "$DNS_BACKUP" /etc/resolv.conf
+        rm -f "$DNS_BACKUP"
+        echo -e "${GREEN}✓ 已恢复原 DNS 配置${NC}"
+    else
+        echo -e "${YELLOW}⚠ 未找到 DNS 备份文件，跳过恢复${NC}"
+    fi
+}
+
 # 设置 iptables 规则
 setup_iptables() {
     source "$CONFIG_FILE"
@@ -359,6 +404,13 @@ enable_proxy() {
     echo -e "${BOLD}${BLUE}启用透明代理${NC}"
     echo -e "${BLUE}================================${NC}"
     
+    # 检查代理是否已经在运行
+    if check_proxy_status; then
+        echo -e "${YELLOW}⚠ 透明代理已经在运行中${NC}"
+        echo "如需重新启动，请先运行 '$0 3' 禁用代理"
+        return 1
+    fi
+    
     # 检查配置文件
     if [ ! -f "$CONFIG_FILE" ]; then
         echo -e "${RED}错误: 未找到配置文件${NC}"
@@ -387,16 +439,21 @@ enable_proxy() {
     # 设置防火墙规则（自动选择 iptables 或 nftables）
     setup_firewall_rules
     
+    # 设置 DNS 为国外 DNS
+    setup_dns
+    
     source "$CONFIG_FILE"
     
     echo ""
     echo -e "${GREEN}✓ 透明代理已启用${NC}"
     echo -e "  ${CYAN}代理服务器: $PROXY_HOST:$PROXY_PORT${NC}"
     echo -e "  ${CYAN}协议类型: $PROXY_TYPE${NC}"
+    echo -e "  ${CYAN}DNS: 8.8.8.8, 1.1.1.1${NC}"
     echo ""
     echo "说明:"
     echo "  - 所有 TCP 流量将通过代理"
     echo "  - Docker、apt、curl 等所有程序自动生效"
+    echo "  - DNS 已切换到国外服务器"
     echo -e "  - ${GREEN}SSH 端口 (22) 已排除，即使代理失效也能正常 SSH 连接${NC}"
     echo "  - 使用 '$0 3' 可以禁用透明代理"
     echo ""
@@ -408,6 +465,13 @@ disable_proxy() {
     echo -e "${BOLD}${BLUE}禁用透明代理${NC}"
     echo -e "${BLUE}================================${NC}"
     
+    # 检查代理是否正在运行
+    if ! check_proxy_status; then
+        echo -e "${YELLOW}⚠ 透明代理未在运行${NC}"
+        echo "无需禁用"
+        return 1
+    fi
+    
     # 清理防火墙规则（自动选择 iptables 或 nftables）
     cleanup_firewall_rules
     
@@ -418,6 +482,9 @@ disable_proxy() {
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ redsocks 已停止${NC}"
     fi
+    
+    # 恢复原 DNS 配置
+    restore_dns
     
     echo ""
     echo -e "${GREEN}✓ 透明代理已禁用${NC}"
