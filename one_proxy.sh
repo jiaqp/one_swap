@@ -255,13 +255,19 @@ setup_nftables() {
     
     echo "正在设置 nftables 规则..."
     
-    # 创建 REDSOCKS 链
-    nft add chain ip nat REDSOCKS 2>/dev/null || nft flush chain ip nat REDSOCKS 2>/dev/null
+    # 确保 nat 表存在
+    nft add table ip nat 2>/dev/null
     
-    # 如果创建失败，先创建 nat 表
-    if ! nft list chain ip nat REDSOCKS &>/dev/null; then
-        nft add table ip nat 2>/dev/null
-        nft add chain ip nat REDSOCKS 2>/dev/null
+    # 确保 OUTPUT 链存在（带有 hook 和 priority）
+    if ! nft list chain ip nat OUTPUT &>/dev/null; then
+        nft add chain ip nat OUTPUT { type nat hook output priority -100 \; }
+    fi
+    
+    # 创建或清空 REDSOCKS 链
+    if nft list chain ip nat REDSOCKS &>/dev/null; then
+        nft flush chain ip nat REDSOCKS
+    else
+        nft add chain ip nat REDSOCKS
     fi
     
     # 【安全保护】排除 SSH 端口 22
@@ -283,8 +289,13 @@ setup_nftables() {
     # 重定向所有 TCP 流量到 redsocks
     nft add rule ip nat REDSOCKS meta l4proto tcp redirect to :$REDSOCKS_PORT
     
-    # 应用到 OUTPUT 链（先删除旧规则再添加）
-    nft delete rule ip nat OUTPUT handle $(nft -a list chain ip nat OUTPUT 2>/dev/null | grep "jump REDSOCKS" | awk '{print $NF}') 2>/dev/null
+    # 删除 OUTPUT 链中已有的 REDSOCKS 跳转（如果存在）
+    local handle=$(nft -a list chain ip nat OUTPUT 2>/dev/null | grep "jump REDSOCKS" | awk '{print $NF}')
+    if [ -n "$handle" ]; then
+        nft delete rule ip nat OUTPUT handle $handle 2>/dev/null
+    fi
+    
+    # 应用到 OUTPUT 链
     nft add rule ip nat OUTPUT meta l4proto tcp jump REDSOCKS
     
     echo -e "${GREEN}✓ nftables 规则设置完成${NC}"
