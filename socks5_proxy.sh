@@ -206,31 +206,81 @@ show_status() {
     echo "================================"
 }
 
+# 交互式菜单
+interactive_menu() {
+    while true; do
+        echo ""
+        echo "================================"
+        echo "SOCKS5代理管理脚本"
+        echo "================================"
+        echo "请选择操作:"
+        echo "  0 - 配置SOCKS5代理服务器"
+        echo "  1 - 启用全局代理"
+        echo "  2 - 禁用全局代理"
+        echo "  3 - 查看当前代理状态"
+        echo "  q - 退出脚本"
+        echo "================================"
+        echo -n "请输入选项 [0/1/2/3/q]: "
+        
+        read choice
+        
+        case "$choice" in
+            0)
+                configure_proxy
+                ;;
+            1)
+                enable_proxy
+                ;;
+            2)
+                disable_proxy
+                ;;
+            3)
+                show_status
+                ;;
+            q|Q)
+                echo ""
+                echo "退出脚本"
+                exit 0
+                ;;
+            *)
+                echo ""
+                echo "错误: 无效的选项 '$choice'"
+                ;;
+        esac
+    done
+}
+
 # 主程序
 main() {
-    case "$1" in
-        0)
-            configure_proxy
-            ;;
-        1)
-            enable_proxy
-            ;;
-        2)
-            disable_proxy
-            ;;
-        status)
-            show_status
-            ;;
-        help|--help|-h|"")
-            show_usage
-            ;;
-        *)
-            echo "错误: 未知选项 '$1'"
-            echo ""
-            show_usage
-            exit 1
-            ;;
-    esac
+    # 如果提供了命令行参数，使用命令行模式
+    if [ $# -gt 0 ]; then
+        case "$1" in
+            0)
+                configure_proxy
+                ;;
+            1)
+                enable_proxy
+                ;;
+            2)
+                disable_proxy
+                ;;
+            status)
+                show_status
+                ;;
+            help|--help|-h)
+                show_usage
+                ;;
+            *)
+                echo "错误: 未知选项 '$1'"
+                echo ""
+                show_usage
+                exit 1
+                ;;
+        esac
+    else
+        # 没有参数时使用交互式菜单
+        interactive_menu
+    fi
 }
 
 # 执行主程序
