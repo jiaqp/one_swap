@@ -24,6 +24,42 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
+# 防火墙类型（自动检测）
+FIREWALL_TYPE=""
+
+# 检测防火墙类型
+detect_firewall() {
+    # 检查是否使用 nftables
+    if command -v nft &> /dev/null; then
+        # 检查 nft 是否有规则或可用
+        if nft list ruleset &> /dev/null; then
+            # 检查 iptables 是否使用 nft 后端
+            if iptables --version 2>&1 | grep -q "nf_tables"; then
+                FIREWALL_TYPE="nftables"
+                return 0
+            fi
+        fi
+    fi
+    
+    # 检查 iptables-legacy 是否可用
+    if command -v iptables-legacy &> /dev/null; then
+        FIREWALL_TYPE="iptables-legacy"
+        return 0
+    fi
+    
+    # 默认使用 iptables
+    if command -v iptables &> /dev/null; then
+        FIREWALL_TYPE="iptables"
+        return 0
+    fi
+    
+    echo -e "${RED}错误: 未检测到任何防火墙工具${NC}"
+    return 1
+}
+
+# 执行防火墙检测
+detect_firewall
+
 # 显示使用说明
 show_usage() {
     echo -e "${BLUE}================================${NC}"
@@ -213,6 +249,99 @@ cleanup_iptables() {
     echo -e "${GREEN}✓ iptables 规则已清理${NC}"
 }
 
+# 设置 nftables 规则
+setup_nftables() {
+    source "$CONFIG_FILE"
+    
+    echo "正在设置 nftables 规则..."
+    
+    # 创建 REDSOCKS 链
+    nft add chain ip nat REDSOCKS 2>/dev/null || nft flush chain ip nat REDSOCKS 2>/dev/null
+    
+    # 如果创建失败，先创建 nat 表
+    if ! nft list chain ip nat REDSOCKS &>/dev/null; then
+        nft add table ip nat 2>/dev/null
+        nft add chain ip nat REDSOCKS 2>/dev/null
+    fi
+    
+    # 【安全保护】排除 SSH 端口 22
+    nft add rule ip nat REDSOCKS tcp dport 22 return
+    
+    # 排除本地网络
+    nft add rule ip nat REDSOCKS ip daddr 0.0.0.0/8 return
+    nft add rule ip nat REDSOCKS ip daddr 10.0.0.0/8 return
+    nft add rule ip nat REDSOCKS ip daddr 127.0.0.0/8 return
+    nft add rule ip nat REDSOCKS ip daddr 169.254.0.0/16 return
+    nft add rule ip nat REDSOCKS ip daddr 172.16.0.0/12 return
+    nft add rule ip nat REDSOCKS ip daddr 192.168.0.0/16 return
+    nft add rule ip nat REDSOCKS ip daddr 224.0.0.0/4 return
+    nft add rule ip nat REDSOCKS ip daddr 240.0.0.0/4 return
+    
+    # 排除代理服务器本身
+    nft add rule ip nat REDSOCKS ip daddr $PROXY_HOST return
+    
+    # 重定向所有 TCP 流量到 redsocks
+    nft add rule ip nat REDSOCKS meta l4proto tcp redirect to :$REDSOCKS_PORT
+    
+    # 应用到 OUTPUT 链（先删除旧规则再添加）
+    nft delete rule ip nat OUTPUT handle $(nft -a list chain ip nat OUTPUT 2>/dev/null | grep "jump REDSOCKS" | awk '{print $NF}') 2>/dev/null
+    nft add rule ip nat OUTPUT meta l4proto tcp jump REDSOCKS
+    
+    echo -e "${GREEN}✓ nftables 规则设置完成${NC}"
+    echo -e "  ${CYAN}✓ SSH 端口 (22) 已排除，确保远程访问安全${NC}"
+}
+
+# 清理 nftables 规则
+cleanup_nftables() {
+    echo "正在清理 nftables 规则..."
+    
+    # 从 OUTPUT 链删除 REDSOCKS 跳转
+    nft delete rule ip nat OUTPUT handle $(nft -a list chain ip nat OUTPUT 2>/dev/null | grep "jump REDSOCKS" | awk '{print $NF}') 2>/dev/null
+    
+    # 清空并删除 REDSOCKS 链
+    nft flush chain ip nat REDSOCKS 2>/dev/null
+    nft delete chain ip nat REDSOCKS 2>/dev/null
+    
+    echo -e "${GREEN}✓ nftables 规则已清理${NC}"
+}
+
+# 统一的规则设置接口
+setup_firewall_rules() {
+    echo -e "${CYAN}检测到防火墙类型: $FIREWALL_TYPE${NC}"
+    
+    case "$FIREWALL_TYPE" in
+        "nftables")
+            setup_nftables
+            ;;
+        "iptables"|"iptables-legacy")
+            setup_iptables
+            ;;
+        *)
+            echo -e "${RED}错误: 未知的防火墙类型: $FIREWALL_TYPE${NC}"
+            return 1
+            ;;
+    esac
+}
+
+# 统一的规则清理接口
+cleanup_firewall_rules() {
+    echo -e "${CYAN}使用防火墙类型: $FIREWALL_TYPE${NC}"
+    
+    case "$FIREWALL_TYPE" in
+        "nftables")
+            cleanup_nftables
+            ;;
+        "iptables"|"iptables-legacy")
+            cleanup_iptables
+            ;;
+        *)
+            echo -e "${YELLOW}警告: 未知的防火墙类型，尝试清理所有规则${NC}"
+            cleanup_iptables 2>/dev/null
+            cleanup_nftables 2>/dev/null
+            ;;
+    esac
+}
+
 # 启用透明代理
 enable_proxy() {
     echo -e "${BLUE}================================${NC}"
@@ -244,8 +373,8 @@ enable_proxy() {
     # 等待 redsocks 完全启动
     sleep 1
     
-    # 设置 iptables 规则
-    setup_iptables
+    # 设置防火墙规则（自动选择 iptables 或 nftables）
+    setup_firewall_rules
     
     source "$CONFIG_FILE"
     
@@ -268,8 +397,8 @@ disable_proxy() {
     echo -e "${BOLD}${BLUE}禁用透明代理${NC}"
     echo -e "${BLUE}================================${NC}"
     
-    # 清理 iptables 规则
-    cleanup_iptables
+    # 清理防火墙规则（自动选择 iptables 或 nftables）
+    cleanup_firewall_rules
     
     # 停止 redsocks
     echo "正在停止 redsocks..."
@@ -311,15 +440,39 @@ show_status() {
     
     echo ""
     
-    # 显示 iptables 规则
-    echo "iptables 规则:"
-    if iptables -t nat -L REDSOCKS -n 2>/dev/null | grep -q "REDIRECT"; then
-        echo -e "${GREEN}  ✓ 透明代理规则已启用${NC}"
-        echo ""
-        iptables -t nat -L REDSOCKS -n --line-numbers | head -15
-    else
-        echo -e "${YELLOW}  ✗ 透明代理规则未启用${NC}"
-    fi
+    # 显示防火墙类型
+    echo -e "${CYAN}防火墙类型: $FIREWALL_TYPE${NC}"
+    echo ""
+    
+    # 显示防火墙规则
+    echo "防火墙规则状态:"
+    case "$FIREWALL_TYPE" in
+        "nftables")
+            # 显示 nftables 规则
+            if nft list chain ip nat REDSOCKS 2>/dev/null | grep -q "redirect"; then
+                echo -e "${GREEN}  ✓ 透明代理规则已启用 (nftables)${NC}"
+                echo ""
+                echo "规则详情:"
+                nft list chain ip nat REDSOCKS 2>/dev/null | head -20
+            else
+                echo -e "${YELLOW}  ✗ 透明代理规则未启用${NC}"
+            fi
+            ;;
+        "iptables"|"iptables-legacy")
+            # 显示 iptables 规则
+            if iptables -t nat -L REDSOCKS -n 2>/dev/null | grep -q "REDIRECT"; then
+                echo -e "${GREEN}  ✓ 透明代理规则已启用 (iptables)${NC}"
+                echo ""
+                echo "规则详情:"
+                iptables -t nat -L REDSOCKS -n --line-numbers 2>/dev/null | head -15
+            else
+                echo -e "${YELLOW}  ✗ 透明代理规则未启用${NC}"
+            fi
+            ;;
+        *)
+            echo -e "${YELLOW}  ✗ 无法检测防火墙规则${NC}"
+            ;;
+    esac
     
     echo -e "${BLUE}================================${NC}"
 }
