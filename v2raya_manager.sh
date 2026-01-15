@@ -52,7 +52,43 @@ install_v2raya() {
     # 清理下载的安装包
     rm -f "/tmp/${PACKAGE_NAME}"
     
+    # 下载必需的地理数据文件
+    echo -e "${YELLOW}正在下载 v2ray-core 必需的地理数据文件...${NC}"
+    
+    # 创建 v2ray 数据目录
+    sudo mkdir -p /usr/local/share/v2ray
+    
+    # 下载 geoip.dat
+    echo -e "${YELLOW}下载 geoip.dat...${NC}"
+    if sudo wget -O /usr/local/share/v2ray/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat; then
+        echo -e "${GREEN}geoip.dat 下载成功！${NC}"
+    else
+        echo -e "${RED}geoip.dat 下载失败，尝试备用地址...${NC}"
+        if sudo wget -O /usr/local/share/v2ray/geoip.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat; then
+            echo -e "${GREEN}geoip.dat 下载成功！${NC}"
+        else
+            echo -e "${RED}geoip.dat 下载失败${NC}"
+        fi
+    fi
+    
+    # 下载 geosite.dat
+    echo -e "${YELLOW}下载 geosite.dat...${NC}"
+    if sudo wget -O /usr/local/share/v2ray/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat; then
+        echo -e "${GREEN}geosite.dat 下载成功！${NC}"
+    else
+        echo -e "${RED}geosite.dat 下载失败，尝试备用地址...${NC}"
+        if sudo wget -O /usr/local/share/v2ray/geosite.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat; then
+            echo -e "${GREEN}geosite.dat 下载成功！${NC}"
+        else
+            echo -e "${RED}geosite.dat 下载失败${NC}"
+        fi
+    fi
+    
+    # 设置文件权限
+    sudo chmod 644 /usr/local/share/v2ray/geo*.dat
+    
     echo -e "${GREEN}v2rayA 安装完成！${NC}"
+    echo -e "${YELLOW}提示：如果地理数据文件下载失败，服务可能无法正常启动${NC}"
 }
 
 # 功能2：启动服务并显示管理端地址
