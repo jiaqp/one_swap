@@ -28,6 +28,32 @@ show_menu() {
 
 # 功能1：下载并安装 v2rayA
 install_v2raya() {
+    # 检查并安装必需的工具
+    echo -e "${YELLOW}检查必需的依赖工具...${NC}"
+    
+    # 检查 wget
+    if ! command -v wget &> /dev/null; then
+        echo -e "${YELLOW}wget 未安装，正在安装...${NC}"
+        sudo apt-get update -qq
+        sudo apt-get install -y wget
+    fi
+    
+    # 检查 unzip
+    if ! command -v unzip &> /dev/null; then
+        echo -e "${YELLOW}unzip 未安装，正在安装...${NC}"
+        sudo apt-get update -qq
+        sudo apt-get install -y unzip
+    fi
+    
+    # 检查 curl（用于获取公网 IP）
+    if ! command -v curl &> /dev/null; then
+        echo -e "${YELLOW}curl 未安装，正在安装...${NC}"
+        sudo apt-get update -qq
+        sudo apt-get install -y curl
+    fi
+    
+    echo -e "${GREEN}依赖工具检查完成！${NC}"
+    
     echo -e "${YELLOW}开始下载 v2rayA 安装包...${NC}"
     
     # 下载安装包
