@@ -52,36 +52,64 @@ install_v2raya() {
     # 清理下载的安装包
     rm -f "/tmp/${PACKAGE_NAME}"
     
+    # 检查并安装 v2ray-core
+    echo -e "${YELLOW}检查 v2ray-core...${NC}"
+    if ! command -v v2ray &> /dev/null; then
+        echo -e "${YELLOW}v2ray-core 未安装，开始安装...${NC}"
+        
+        # 下载 v2ray-core（使用本地服务器）
+        V2RAY_FILE="v2ray-linux-64.zip"
+        V2RAY_URL="http://43.139.51.236:16666/${V2RAY_FILE}"
+        
+        echo -e "${YELLOW}从本地服务器下载 v2ray-core...${NC}"
+        if wget -O "/tmp/${V2RAY_FILE}" "${V2RAY_URL}"; then
+            echo -e "${GREEN}下载成功！${NC}"
+        else
+            echo -e "${RED}v2ray-core 下载失败，请检查服务器地址${NC}"
+            return 1
+        fi
+        
+        # 解压并安装
+        echo -e "${YELLOW}解压并安装 v2ray-core...${NC}"
+        sudo unzip -o "/tmp/${V2RAY_FILE}" -d /usr/local/bin/
+        sudo chmod +x /usr/local/bin/v2ray
+        
+        # 清理下载文件
+        rm -f "/tmp/${V2RAY_FILE}"
+        
+        # 验证安装
+        if command -v v2ray &> /dev/null; then
+            echo -e "${GREEN}v2ray-core 安装成功！版本：${NC}"
+            v2ray version
+        else
+            echo -e "${RED}v2ray-core 安装失败${NC}"
+            return 1
+        fi
+    else
+        echo -e "${GREEN}v2ray-core 已安装${NC}"
+        v2ray version
+    fi
+    
     # 下载必需的地理数据文件
     echo -e "${YELLOW}正在下载 v2ray-core 必需的地理数据文件...${NC}"
     
     # 创建 v2ray 数据目录
     sudo mkdir -p /usr/local/share/v2ray
     
-    # 下载 geoip.dat
+    # 下载 geoip.dat（直接使用 CDN 加速地址）
     echo -e "${YELLOW}下载 geoip.dat...${NC}"
-    if sudo wget -O /usr/local/share/v2ray/geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat; then
+    if sudo wget -O /usr/local/share/v2ray/geoip.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat; then
         echo -e "${GREEN}geoip.dat 下载成功！${NC}"
     else
-        echo -e "${RED}geoip.dat 下载失败，尝试备用地址...${NC}"
-        if sudo wget -O /usr/local/share/v2ray/geoip.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geoip.dat; then
-            echo -e "${GREEN}geoip.dat 下载成功！${NC}"
-        else
-            echo -e "${RED}geoip.dat 下载失败${NC}"
-        fi
+        echo -e "${RED}geoip.dat 下载失败${NC}"
     fi
     
-    # 下载 geosite.dat
+    # 下载 geosite.dat（直接使用 CDN 加速地址）
     echo -e "${YELLOW}下载 geosite.dat...${NC}"
-    if sudo wget -O /usr/local/share/v2ray/geosite.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat; then
+    if sudo wget -O /usr/local/share/v2ray/geosite.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat; then
         echo -e "${GREEN}geosite.dat 下载成功！${NC}"
     else
-        echo -e "${RED}geosite.dat 下载失败，尝试备用地址...${NC}"
-        if sudo wget -O /usr/local/share/v2ray/geosite.dat https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release/geosite.dat; then
-            echo -e "${GREEN}geosite.dat 下载成功！${NC}"
-        else
-            echo -e "${RED}geosite.dat 下载失败${NC}"
-        fi
+        echo -e "${RED}geosite.dat 下载失败${NC}"
     fi
     
     # 设置文件权限
