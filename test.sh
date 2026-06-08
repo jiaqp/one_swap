@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.5.0"
+VERSION="1.6.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -51,6 +51,7 @@ DEFAULT_IFACE6=""
 IFACE_MTU=""
 IFACE_QDISC=""
 NIC_SPEED_MBPS=""
+NIC_SPEED_SOURCE=""
 PUBLIC_IP=""
 PUBLIC_IPV6=""
 PUBLIC_ASN=""
@@ -531,7 +532,7 @@ EOF
     cat <<'EOF'
 
 请选择服务器套餐带宽：
-  1) 自动识别/不知道（识别不到会按 1000 Mbps 估算）
+  1) 自动识别/不知道（云服务器常识别不到；识别不到按 1000 Mbps 估算）
   2) 100 Mbps
   3) 200 Mbps
   4) 500 Mbps
@@ -808,6 +809,29 @@ bytes_from_mb() {
   awk -v mb="$1" 'BEGIN { printf "%.0f\n", mb * 1024 * 1024 }'
 }
 
+clean_nic_speed() {
+  local raw="${1:-}"
+  local speed
+  case "$(to_lower "$raw")" in
+    ""|-1|unknown*|*unknown*|not*|n/a)
+      return 1
+      ;;
+  esac
+  speed="$(printf '%s' "$raw" | grep -Eo '[0-9]+' | head -n 1 || true)"
+  if ! is_integer "$speed"; then
+    return 1
+  fi
+  case "$speed" in
+    0|4294967295)
+      return 1
+      ;;
+  esac
+  if [ "$speed" -lt 1 ] || [ "$speed" -gt 1000000 ]; then
+    return 1
+  fi
+  printf '%s' "$speed"
+}
+
 add_target() {
   local label="$1"
   local host="$2"
@@ -978,8 +1002,23 @@ detect_interface() {
   fi
 
   if [ -n "$DEFAULT_IFACE" ] && command_exists ethtool; then
-    NIC_SPEED_MBPS="$(ethtool "$DEFAULT_IFACE" 2>/dev/null | awk -F: '/Speed:/ {gsub(/[^0-9]/, "", $2); print $2; exit}')"
-    is_integer "$NIC_SPEED_MBPS" || NIC_SPEED_MBPS=""
+    local raw_speed parsed_speed
+    raw_speed="$(ethtool "$DEFAULT_IFACE" 2>/dev/null | awk -F: '/Speed:/ {sub(/^[ \t]+/, "", $2); print $2; exit}')"
+    parsed_speed="$(clean_nic_speed "$raw_speed" 2>/dev/null || true)"
+    if [ -n "$parsed_speed" ]; then
+      NIC_SPEED_MBPS="$parsed_speed"
+      NIC_SPEED_SOURCE="ethtool"
+    fi
+  fi
+
+  if [ -z "$NIC_SPEED_MBPS" ] && [ -n "$DEFAULT_IFACE" ] && [ -r "/sys/class/net/$DEFAULT_IFACE/speed" ]; then
+    local sysfs_speed
+    sysfs_speed="$(cat "/sys/class/net/$DEFAULT_IFACE/speed" 2>/dev/null || true)"
+    sysfs_speed="$(clean_nic_speed "$sysfs_speed" 2>/dev/null || true)"
+    if [ -n "$sysfs_speed" ]; then
+      NIC_SPEED_MBPS="$sysfs_speed"
+      NIC_SPEED_SOURCE="sysfs"
+    fi
   fi
 }
 
@@ -1194,7 +1233,7 @@ choose_bandwidth() {
 
   if is_integer "$NIC_SPEED_MBPS" && [ "$NIC_SPEED_MBPS" -gt 0 ]; then
     TARGET_BANDWIDTH_MBPS="$NIC_SPEED_MBPS"
-    BANDWIDTH_SOURCE="ethtool"
+    BANDWIDTH_SOURCE="nic"
     if [ "$NIC_SPEED_MBPS" -ge 10000 ]; then
       add_warning "网卡报告速率为 ${NIC_SPEED_MBPS} Mbps。虚拟网卡速率可能高于 VPS 套餐；如果真实套餐更低，请手动传入 --bandwidth。"
     fi
@@ -1204,6 +1243,7 @@ choose_bandwidth() {
   TARGET_BANDWIDTH_MBPS="1000"
   BANDWIDTH_SOURCE="fallback"
   add_warning "未能检测真实带宽，暂按 1000 Mbps 估算。为了更准确，请手动传入 --bandwidth。"
+  add_note "很多云服务器的虚拟网卡不会暴露真实速率，或暴露的是虚拟上限而非套餐带宽。优化计算应优先按 VPS 套餐带宽手动选择。"
 }
 
 loss_factor_for() {
@@ -1484,6 +1524,7 @@ cn_source() {
   case "${1:-}" in
     user) printf '手动输入' ;;
     ethtool) printf '网卡检测' ;;
+    nic) printf '网卡检测' ;;
     fallback) printf '默认估算' ;;
     *) printf '%s' "${1:-未知}" ;;
   esac
@@ -1585,7 +1626,11 @@ print_report() {
   print_kv "默认网卡" "$DEFAULT_IFACE"
   print_kv "网卡 MTU" "$IFACE_MTU"
   print_kv "网卡 qdisc" "$IFACE_QDISC"
-  print_kv "网卡速率" "${NIC_SPEED_MBPS:-未知} Mbps"
+  if [ -n "$NIC_SPEED_MBPS" ]; then
+    print_kv "网卡速率" "${NIC_SPEED_MBPS} Mbps (${NIC_SPEED_SOURCE:-未知来源})"
+  else
+    print_kv "网卡速率" "未知（虚拟网卡未暴露真实速率）"
+  fi
 
   print_section "TCP 状态"
   print_kv "当前拥塞控制" "$CURRENT_CC"
@@ -1687,7 +1732,8 @@ print_json() {
   printf '    "default_iface": "%s",\n' "$(json_escape "$DEFAULT_IFACE")"
   printf '    "mtu": "%s",\n' "$(json_escape "$IFACE_MTU")"
   printf '    "qdisc": "%s",\n' "$(json_escape "$IFACE_QDISC")"
-  printf '    "nic_speed_mbps": "%s"\n' "$(json_escape "$NIC_SPEED_MBPS")"
+  printf '    "nic_speed_mbps": "%s",\n' "$(json_escape "$NIC_SPEED_MBPS")"
+  printf '    "nic_speed_source": "%s"\n' "$(json_escape "$NIC_SPEED_SOURCE")"
   printf '  },\n'
   printf '  "tcp": {\n'
   printf '    "current_cc": "%s",\n' "$(json_escape "$CURRENT_CC")"
