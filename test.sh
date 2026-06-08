@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -25,6 +25,7 @@ QUIET_REQUESTED=0
 
 REGION="china"
 TARGETS_RAW=""
+CHINA_CARRIER="public"
 PING_COUNT=12
 PING_TIMEOUT=2
 MTR_COUNT=30
@@ -124,6 +125,8 @@ bbr-auto-tune.sh - 面向代理服务器的 BBR/TCP 自动优化计算脚本
 可覆盖的输入：
   --region NAME           主要客户端地区。默认 china。
                           可选：china, global, asia, us, eu。
+  --china-carrier NAME    中国大陆探测线路。可选：all, ct, cu, cm, public。
+                          all=三网九点，ct=电信，cu=联通，cm=移动，public=公共 DNS。
   --targets LIST          自定义 ping 探测目标，用英文逗号分隔。
                           示例：--targets "ct=202.96.128.86,ali=223.5.5.5"
   --bandwidth MBPS        服务器套餐带宽，单位 Mbps。
@@ -298,8 +301,48 @@ ensure_detection_tools() {
   fi
 }
 
+china_ct_targets() {
+  printf '%s' 'ct-bj=219.141.136.10,ct-sh=202.96.209.133,ct-gd=202.96.128.86'
+}
+
+china_cu_targets() {
+  printf '%s' 'cu-bj=202.106.0.20,cu-sh=210.22.70.3,cu-gd=221.5.88.88'
+}
+
+china_cm_targets() {
+  printf '%s' 'cm-bj=221.130.33.52,cm-sh=211.136.112.50,cm-gd=211.136.192.6'
+}
+
+china_public_targets() {
+  printf '%s' 'aliyun-dns-cn=223.5.5.5,dnspod-cn=119.29.29.29,114dns-cn=114.114.114.114,baidu-dns-cn=180.76.76.76'
+}
+
 china_precise_targets() {
-  printf '%s' 'ct-bj=219.141.136.10,ct-sh=202.96.209.133,ct-gd=202.96.128.86,cu-bj=202.106.0.20,cu-sh=210.22.70.3,cu-gd=221.5.88.88,cm-bj=221.130.33.52,cm-sh=211.136.112.50,cm-gd=211.136.192.6'
+  printf '%s,%s,%s' "$(china_ct_targets)" "$(china_cu_targets)" "$(china_cm_targets)"
+}
+
+china_targets_for_carrier() {
+  case "$(to_lower "${1:-public}")" in
+    all|three|3|sanwang)
+      china_precise_targets
+      ;;
+    ct|telecom|dianxin)
+      china_ct_targets
+      ;;
+    cu|unicom|liantong)
+      china_cu_targets
+      ;;
+    cm|mobile|yidong)
+      china_cm_targets
+      ;;
+    public|dns|"")
+      china_public_targets
+      ;;
+    *)
+      add_warning "未知中国线路选择 '$1'，已改用公共 DNS 探测目标。"
+      china_public_targets
+      ;;
+  esac
 }
 
 interactive_wizard() {
@@ -420,26 +463,64 @@ EOF
 
 中国线路探测目标：
   1) 中国三网九点：电信/联通/移动，北京/上海/广东（推荐）
-  2) 简洁公共 DNS：阿里/腾讯/114/百度（更快，但可能被 Anycast 影响）
-  3) 手动输入
+  2) 仅电信：北京/上海/广东
+  3) 仅联通：北京/上海/广东
+  4) 仅移动：北京/上海/广东
+  5) 真实用户 IP：只按你输入的中国客户端 IP 计算
+  6) 简洁公共 DNS：阿里/腾讯/114/百度（更快，但可能被 Anycast 影响）
+  7) 手动输入完整目标列表
 EOF
         prompt_read "目标 [1]: "
         case "${PROMPT_REPLY:-1}" in
           1|"")
+            CHINA_CARRIER="all"
             TARGETS_RAW="$(china_precise_targets)"
             break
             ;;
           2)
-            TARGETS_RAW=""
+            CHINA_CARRIER="ct"
+            TARGETS_RAW="$(china_ct_targets)"
             break
             ;;
           3)
+            CHINA_CARRIER="cu"
+            TARGETS_RAW="$(china_cu_targets)"
+            break
+            ;;
+          4)
+            CHINA_CARRIER="cm"
+            TARGETS_RAW="$(china_cm_targets)"
+            break
+            ;;
+          5)
+            CHINA_CARRIER="user"
+            prompt_read "请输入真实用户公网 IP，可多个，用英文逗号分隔，例如 1.2.3.4,5.6.7.8: "
+            TARGETS_RAW="$(printf '%s' "$PROMPT_REPLY" | awk -F',' '{
+              out=""
+              for (i=1;i<=NF;i++) {
+                gsub(/^[ \t]+|[ \t]+$/, "", $i)
+                if ($i == "") continue
+                item = $i
+                if (item !~ /=/) item = "user" i "=" item
+                if (out == "") out = item; else out = out "," item
+              }
+              printf "%s", out
+            }')"
+            break
+            ;;
+          6)
+            CHINA_CARRIER="public"
+            TARGETS_RAW="$(china_public_targets)"
+            break
+            ;;
+          7)
+            CHINA_CARRIER="custom"
             prompt_read "请输入探测目标，例如 ct-bj=219.141.136.10,cm-gd=211.136.192.6: "
             TARGETS_RAW="$PROMPT_REPLY"
             break
             ;;
           *)
-            printf '请输入 1-3。\n'
+            printf '请输入 1-7。\n'
             ;;
         esac
       done
@@ -648,6 +729,9 @@ EOF
   printf '\n即将使用以下设置：\n'
   printf '  模式: %s\n' "$([ "$APPLY" -eq 1 ] && printf '检测并应用' || { [ "$SHOW_CONFIG" -eq 1 ] && printf '只打印配置' || { [ "$JSON" -eq 1 ] && printf 'JSON 输出' || printf '只生成报告'; }; })"
   printf '  地区: %s\n' "$REGION"
+  if [ "$REGION" = "china" ] || [ "$REGION" = "cn" ]; then
+    printf '  中国线路: %s\n' "$(cn_china_carrier "$CHINA_CARRIER")"
+  fi
   printf '  探测目标: %s\n' "${TARGETS_RAW:-自动预设}"
   printf '  带宽: %s\n' "${TARGET_BANDWIDTH_MBPS:-自动识别/默认 1000 Mbps}"
   printf '  协议/目标: %s / %s\n' "$PROTOCOL" "$PROFILE"
@@ -732,36 +816,38 @@ add_target() {
   TARGET_HOSTS+=("$host")
 }
 
+parse_targets_list() {
+  local raw="$1"
+  local old_ifs="$IFS"
+  local item label host
+  IFS=','
+  for item in $raw; do
+    item=$(printf '%s' "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    [ -z "$item" ] && continue
+    if printf '%s' "$item" | grep -q '='; then
+      label="${item%%=*}"
+      host="${item#*=}"
+    else
+      label="$item"
+      host="$item"
+    fi
+    add_target "$label" "$host"
+  done
+  IFS="$old_ifs"
+}
+
 load_targets() {
   TARGET_LABELS=()
   TARGET_HOSTS=()
 
   if [ -n "$TARGETS_RAW" ]; then
-    local old_ifs="$IFS"
-    local item label host
-    IFS=','
-    for item in $TARGETS_RAW; do
-      item=$(printf '%s' "$item" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-      [ -z "$item" ] && continue
-      if printf '%s' "$item" | grep -q '='; then
-        label="${item%%=*}"
-        host="${item#*=}"
-      else
-        label="$item"
-        host="$item"
-      fi
-      add_target "$label" "$host"
-    done
-    IFS="$old_ifs"
+    parse_targets_list "$TARGETS_RAW"
     return 0
   fi
 
   case "$(to_lower "$REGION")" in
     china|cn)
-      add_target "aliyun-dns-cn" "223.5.5.5"
-      add_target "dnspod-cn" "119.29.29.29"
-      add_target "114dns-cn" "114.114.114.114"
-      add_target "baidu-dns-cn" "180.76.76.76"
+      parse_targets_list "$(china_targets_for_carrier "$CHINA_CARRIER")"
       ;;
     asia)
       add_target "cloudflare" "1.1.1.1"
@@ -1303,6 +1389,7 @@ generate_config() {
 # 优化目标：$PROFILE
 # 协议类型：$PROTOCOL
 # 客户端地区：$REGION
+# 中国线路：$([ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ] && cn_china_carrier "$CHINA_CARRIER" || printf '不适用')
 # 目标带宽：${TARGET_BANDWIDTH_MBPS} Mbps ($(cn_source "$BANDWIDTH_SOURCE"))
 # 有效 RTT/丢包/抖动：${EFFECTIVE_RTT_MS} ms / ${EFFECTIVE_LOSS_PERCENT}% / ${EFFECTIVE_JITTER_MS} ms
 # BDP: ${BDP_MB} MB
@@ -1430,6 +1517,19 @@ cn_protocol() {
   esac
 }
 
+cn_china_carrier() {
+  case "$(to_lower "${1:-}")" in
+    all|three|3|sanwang) printf '三网全部' ;;
+    ct|telecom|dianxin) printf '仅电信' ;;
+    cu|unicom|liantong) printf '仅联通' ;;
+    cm|mobile|yidong) printf '仅移动' ;;
+    public|dns|"") printf '公共 DNS' ;;
+    user) printf '真实用户 IP' ;;
+    custom) printf '自定义目标' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 script_display_path() {
   local base
   base="$(basename "$0" 2>/dev/null || printf '')"
@@ -1444,8 +1544,28 @@ script_display_path() {
 }
 
 print_report() {
-  local self_path
+  local self_path carrier_arg targets_arg
   self_path="$(script_display_path)"
+  carrier_arg=""
+  targets_arg=""
+
+  if [ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ]; then
+    case "$CHINA_CARRIER" in
+      public|dns|"") ;;
+      *)
+        carrier_arg=" --china-carrier $CHINA_CARRIER"
+        ;;
+    esac
+  fi
+  if [ -n "$TARGETS_RAW" ]; then
+    case "$CHINA_CARRIER" in
+      all|ct|cu|cm) ;;
+      *)
+        targets_arg=" --targets \"$TARGETS_RAW\""
+        ;;
+    esac
+  fi
+
   printf 'BBR Auto Tune v%s\n' "$VERSION"
   printf '运行模式：%s\n' "$([ "$APPLY" -eq 1 ] && printf '应用优化' || printf '只生成报告')"
 
@@ -1499,6 +1619,9 @@ print_report() {
   print_section "计算结果"
   print_kv "目标带宽" "${TARGET_BANDWIDTH_MBPS} Mbps ($(cn_source "$BANDWIDTH_SOURCE"))"
   print_kv "优化目标/协议" "$(cn_profile "$PROFILE") / $(cn_protocol "$PROTOCOL")"
+  if [ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ]; then
+    print_kv "中国线路" "$(cn_china_carrier "$CHINA_CARRIER")"
+  fi
   print_kv "并发数" "$CONCURRENCY"
   print_kv "有效 RTT" "${EFFECTIVE_RTT_MS} ms"
   print_kv "有效丢包" "${EFFECTIVE_LOSS_PERCENT}%"
@@ -1535,7 +1658,7 @@ print_report() {
     printf '  正在应用配置到 %s\n' "$CONF_PATH"
   else
     printf '  交互式应用：sudo bash %s --interactive\n' "$self_path"
-    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$self_path" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
+    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s%s --profile %s --protocol %s%s --apply\n' "$self_path" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$carrier_arg" "$PROFILE" "$PROTOCOL" "$targets_arg"
     printf '  应用后验证：sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc && ss -tin | grep -i bbr\n'
   fi
 }
@@ -1770,6 +1893,10 @@ parse_args() {
         shift
         REGION="${1:-}"
         ;;
+      --china-carrier)
+        shift
+        CHINA_CARRIER="$(to_lower "${1:-}")"
+        ;;
       --targets)
         shift
         TARGETS_RAW="${1:-}"
@@ -1863,6 +1990,25 @@ validate_options() {
       exit 2
       ;;
   esac
+
+  case "$CHINA_CARRIER" in
+    all|ct|cu|cm|public|dns|three|3|sanwang|telecom|dianxin|unicom|liantong|mobile|yidong|user|custom|"") ;;
+    *)
+      printf '错误：--china-carrier 必须是 all、ct、cu、cm 或 public。\n' >&2
+      exit 2
+      ;;
+  esac
+
+  if [ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ]; then
+    case "$CHINA_CARRIER" in
+      user|custom)
+        if [ -z "$TARGETS_RAW" ]; then
+          printf '错误：--china-carrier %s 需要同时提供 --targets，例如 --targets "home=1.2.3.4"。\n' "$CHINA_CARRIER" >&2
+          exit 2
+        fi
+        ;;
+    esac
+  fi
 
   if [ "$SPEEDTEST" -eq 1 ]; then
     add_note "--speedtest 是预留选项，当前不会自动运行第三方 speedtest。"
