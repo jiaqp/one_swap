@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -78,6 +78,7 @@ RECOMMENDED_SYN_BACKLOG=""
 RECOMMENDED_CONNTRACK=""
 RECOMMENDED_FILE_MAX=""
 LINE_QUALITY=""
+PING_COMMAND_MISSING_NOTED=0
 
 TARGET_LABELS=()
 TARGET_HOSTS=()
@@ -233,6 +234,68 @@ prompt_yes_no() {
         ;;
     esac
   done
+}
+
+join_words() {
+  local out="" item
+  for item in "$@"; do
+    if [ -z "$out" ]; then
+      out="$item"
+    else
+      out="$out $item"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+ensure_detection_tools() {
+  [ "$NO_NETWORK" -eq 1 ] && return 0
+  [ "$IS_LINUX" -eq 1 ] || return 0
+
+  local missing_names=()
+  local apt_pkgs=()
+
+  if ! command_exists ping; then
+    missing_names+=("ping")
+    apt_pkgs+=("iputils-ping")
+  fi
+  if ! command_exists curl && ! command_exists wget; then
+    missing_names+=("curl/wget")
+    apt_pkgs+=("curl")
+  fi
+  if ! command_exists ethtool; then
+    missing_names+=("ethtool")
+    apt_pkgs+=("ethtool")
+  fi
+  if [ "$DEEP" -eq 1 ]; then
+    if ! command_exists mtr; then
+      missing_names+=("mtr")
+      apt_pkgs+=("mtr-tiny")
+    fi
+    if ! command_exists tracepath; then
+      missing_names+=("tracepath")
+      apt_pkgs+=("iputils-tracepath")
+    fi
+  fi
+
+  [ "${#missing_names[@]}" -eq 0 ] && return 0
+
+  add_warning "系统缺少检测工具：$(join_words "${missing_names[@]}")。缺少 ping 会导致所有目标显示“无 ping”。"
+
+  if [ "$INTERACTIVE" -eq 1 ] && [ "$(id -u 2>/dev/null || printf 1)" -eq 0 ] && command_exists apt-get; then
+    if prompt_yes_no "检测到缺少工具：$(join_words "${missing_names[@]}")。是否自动安装？" "y"; then
+      progress "安装检测工具: $(join_words "${apt_pkgs[@]}")"
+      if apt-get update && apt-get install -y "${apt_pkgs[@]}"; then
+        progress "检测工具安装完成"
+      else
+        add_warning "自动安装检测工具失败，请手动执行：sudo apt-get update && sudo apt-get install -y $(join_words "${apt_pkgs[@]}")"
+      fi
+    else
+      add_warning "已跳过检测工具安装。建议手动执行：sudo apt-get update && sudo apt-get install -y $(join_words "${apt_pkgs[@]}")"
+    fi
+  elif command_exists apt-get; then
+    add_warning "建议安装检测工具：sudo apt-get update && sudo apt-get install -y $(join_words "${apt_pkgs[@]}")"
+  fi
 }
 
 china_precise_targets() {
@@ -924,6 +987,11 @@ measure_paths() {
     return 0
   fi
 
+  if ! command_exists ping && [ "$PING_COMMAND_MISSING_NOTED" -eq 0 ]; then
+    add_warning "系统没有 ping 命令，无法测 RTT/丢包。Ubuntu/Debian 可安装：sudo apt-get install -y iputils-ping"
+    PING_COMMAND_MISSING_NOTED=1
+  fi
+
   progress "网络探测开始: 共 ${#TARGET_HOSTS[@]} 个目标"
   local i
   for ((i=0; i<${#TARGET_HOSTS[@]}; i++)); do
@@ -1175,23 +1243,43 @@ calculate_recommendations() {
   RECOMMENDED_SOMAXCONN="65535"
   RECOMMENDED_SYN_BACKLOG="$RECOMMENDED_SOMAXCONN"
   RECOMMENDED_CONNTRACK="$(awk -v c="$CONCURRENCY" -v ram="$RAM_MB" 'BEGIN {
-    target = c * 8192
+    target = c * 512
     if (ram > 0 && ram < 1024) base = 65536
     else base = 262144
     if (target < base) target = base
-    if (ram > 0) {
-      cap = int((ram * 1024 * 1024) / 512)
-      if (target > cap) target = cap
-    }
+
+    if (ram > 0 && ram < 2048) cap = 262144
+    else if (ram > 0 && ram < 8192) cap = 524288
+    else if (ram > 0 && ram < 32768) cap = 1048576
+    else cap = 2097152
+
+    rounded = 1
+    while (rounded < target) rounded *= 2
+    target = rounded
+    if (target > cap) target = cap
     if (target < 32768) target = 32768
     printf "%.0f\n", target
   }')"
-  RECOMMENDED_FILE_MAX="$(awk -v c="$CONCURRENCY" 'BEGIN { v = c * 8192; if (v < 1048576) v = 1048576; printf "%.0f\n", v }')"
+  RECOMMENDED_FILE_MAX="$(awk -v c="$CONCURRENCY" -v ram="$RAM_MB" 'BEGIN {
+    v = c * 1024
+    if (v < 1048576) v = 1048576
+
+    if (ram > 0 && ram < 2048) cap = 1048576
+    else if (ram > 0 && ram < 8192) cap = 2097152
+    else if (ram > 0 && ram < 32768) cap = 4194304
+    else cap = 8388608
+
+    if (v > cap) v = cap
+    printf "%.0f\n", v
+  }')"
 
   LINE_QUALITY="$(classify_quality "$EFFECTIVE_RTT_MS" "$EFFECTIVE_LOSS_PERCENT" "$EFFECTIVE_JITTER_MS")"
 
   if [ "$REQUESTED_CC" = "bbr" ] && [ "$BBR_STATE" = "missing-or-unknown" ]; then
     add_warning "当前可用拥塞控制算法中未看到 BBR。使用 --apply 时会尝试执行 'modprobe tcp_bbr'；如仍不可用，请升级或更换支持 BBR 的内核。"
+  fi
+  if printf '%s' "$IFACE_QDISC" | grep -q '^qdisc mq ' && [ "$CURRENT_QDISC" = "fq" ]; then
+    add_note "默认网卡使用多队列 root qdisc：mq。这在云服务器上很常见；系统 default_qdisc 已是 fq，应用时会跳过强制替换 root qdisc，避免网络闪断。"
   fi
   if [ "$CPU_AES" != "yes" ]; then
     add_note "未检测到 AES 加速。TLS/Reality/QUIC 类代理吞吐可能受 CPU 限制。"
@@ -1342,7 +1430,22 @@ cn_protocol() {
   esac
 }
 
+script_display_path() {
+  local base
+  base="$(basename "$0" 2>/dev/null || printf '')"
+  case "$base" in
+    bash|sh|dash|zsh|-bash|"")
+      printf 'bbr-auto-tune.sh'
+      ;;
+    *)
+      printf '%s' "$0"
+      ;;
+  esac
+}
+
 print_report() {
+  local self_path
+  self_path="$(script_display_path)"
   printf 'BBR Auto Tune v%s\n' "$VERSION"
   printf '运行模式：%s\n' "$([ "$APPLY" -eq 1 ] && printf '应用优化' || printf '只生成报告')"
 
@@ -1431,8 +1534,8 @@ print_report() {
   if [ "$APPLY" -eq 1 ]; then
     printf '  正在应用配置到 %s\n' "$CONF_PATH"
   else
-    printf '  交互式应用：sudo bash %s --interactive\n' "$0"
-    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$0" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
+    printf '  交互式应用：sudo bash %s --interactive\n' "$self_path"
+    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$self_path" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
     printf '  应用后验证：sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc && ss -tin | grep -i bbr\n'
   fi
 }
@@ -1570,7 +1673,11 @@ apply_config() {
   fi
 
   if [ "$LIVE_QDISC" -eq 1 ] && command_exists tc && [ -n "$DEFAULT_IFACE" ]; then
-    if ! tc qdisc show dev "$DEFAULT_IFACE" 2>/dev/null | grep -qw fq; then
+    local root_qdisc_line
+    root_qdisc_line="$(tc qdisc show dev "$DEFAULT_IFACE" 2>/dev/null | head -n 1 | sed 's/[[:space:]]\+/ /g' || true)"
+    if printf '%s' "$root_qdisc_line" | grep -q '^qdisc mq '; then
+      printf '提示：检测到 %s 使用多队列 root qdisc：mq。已跳过实时替换 root qdisc，避免网络闪断。\n' "$DEFAULT_IFACE"
+    elif ! printf '%s' "$root_qdisc_line" | grep -qw fq; then
       progress "尝试立即把当前网卡 $DEFAULT_IFACE 的 qdisc 切到 fq"
       if tc qdisc replace dev "$DEFAULT_IFACE" root fq >/dev/null 2>&1; then
         printf '已立即应用 qdisc：%s -> fq\n' "$DEFAULT_IFACE"
@@ -1774,6 +1881,8 @@ main() {
     exit $?
   fi
 
+  progress "检查检测工具是否齐全"
+  ensure_detection_tools
   progress "检测 CPU、内存、虚拟化环境"
   detect_system
   progress "检测公网 IP、ASN、地理位置"
