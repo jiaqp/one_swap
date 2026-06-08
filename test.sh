@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -19,6 +19,7 @@ NO_NETWORK=0
 DEEP=0
 SPEEDTEST=0
 LIVE_QDISC=1
+INTERACTIVE=0
 
 REGION="china"
 TARGETS_RAW=""
@@ -95,15 +96,18 @@ usage() {
 bbr-auto-tune.sh - automatic BBR/network tuning calculator for proxy servers
 
 Usage:
-  sudo bash bbr-auto-tune.sh --apply
   bash bbr-auto-tune.sh
+  sudo bash bbr-auto-tune.sh --interactive
   bash bbr-auto-tune.sh --bandwidth 1000 --region china --profile throughput
 
 Safe by default:
-  Without --apply, this script only detects, measures, calculates, and prints
+  Running the script directly opens a Chinese interactive wizard when a TTY is
+  available. Without --apply, it only detects, measures, calculates, and prints
   a recommended sysctl config. It does not modify the system.
 
 Common options:
+  --interactive, -i       Open the Chinese menu wizard.
+  --non-interactive       Never prompt; use CLI values and automatic defaults.
   --apply                 Write config and apply it with sysctl.
   --rollback              Restore the newest backup of the config path.
   --show-config           Print only the recommended sysctl config.
@@ -137,10 +141,11 @@ Apply options:
                           Default: /etc/sysctl.d/99-bbr-auto-tune.conf
 
 Recommended workflow:
-  1. bash bbr-auto-tune.sh --bandwidth 1000
-  2. Review warnings and the generated config.
-  3. sudo bash bbr-auto-tune.sh --bandwidth 1000 --apply
-  4. ss -tin | grep -i bbr
+  1. bash bbr-auto-tune.sh
+  2. Follow the Chinese menu and generate a report first.
+  3. Re-run with sudo and choose "apply" in the menu.
+  4. Verify: sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+     and: ss -tin | grep -i bbr
 
 EOF
 }
@@ -171,6 +176,413 @@ is_integer() {
 
 json_escape() {
   printf '%s' "${1:-}" | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g'
+}
+
+can_prompt() {
+  [ -t 0 ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }
+}
+
+prompt_read() {
+  local prompt="$1"
+  PROMPT_REPLY=""
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s' "$prompt" >/dev/tty
+    IFS= read -r PROMPT_REPLY </dev/tty || PROMPT_REPLY=""
+  else
+    printf '%s' "$prompt"
+    IFS= read -r PROMPT_REPLY || PROMPT_REPLY=""
+  fi
+}
+
+prompt_yes_no() {
+  local question="$1"
+  local default="${2:-y}"
+  local hint answer
+
+  if [ "$default" = "y" ]; then
+    hint="[Y/n]"
+  else
+    hint="[y/N]"
+  fi
+
+  while true; do
+    prompt_read "$question $hint "
+    answer="$(to_lower "$PROMPT_REPLY")"
+    [ -z "$answer" ] && answer="$default"
+    case "$answer" in
+      y|yes|1|是|好)
+        return 0
+        ;;
+      n|no|0|否|不)
+        return 1
+        ;;
+      *)
+        printf '请输入 y 或 n。\n'
+        ;;
+    esac
+  done
+}
+
+china_precise_targets() {
+  printf '%s' 'ct-bj=219.141.136.10,ct-sh=202.96.209.133,ct-gd=202.96.128.86,cu-bj=202.106.0.20,cu-sh=210.22.70.3,cu-gd=221.5.88.88,cm-bj=221.130.33.52,cm-sh=211.136.112.50,cm-gd=211.136.192.6'
+}
+
+interactive_wizard() {
+  if ! can_prompt; then
+    printf 'ERROR: interactive mode needs a terminal. Download the script and run it in a shell, or use --non-interactive.\n' >&2
+    exit 2
+  fi
+
+  printf '\nBBR Auto Tune 中文向导 v%s\n' "$VERSION"
+  printf '直接回车使用推荐值；默认先生成报告，不会修改系统。\n\n'
+
+  while true; do
+    cat <<'EOF'
+请选择运行模式：
+  1) 只检测并生成报告（推荐先跑这个）
+  2) 检测后直接应用优化（需要 sudo/root）
+  3) 只打印推荐 sysctl 配置
+  4) 输出 JSON，方便程序读取
+  5) 回滚上一次应用前的备份
+EOF
+    prompt_read "模式 [1]: "
+    case "${PROMPT_REPLY:-1}" in
+      1|"")
+        APPLY=0
+        SHOW_CONFIG=0
+        JSON=0
+        ROLLBACK=0
+        break
+        ;;
+      2)
+        APPLY=1
+        SHOW_CONFIG=0
+        JSON=0
+        ROLLBACK=0
+        break
+        ;;
+      3)
+        APPLY=0
+        SHOW_CONFIG=1
+        JSON=0
+        ROLLBACK=0
+        break
+        ;;
+      4)
+        APPLY=0
+        SHOW_CONFIG=0
+        JSON=1
+        ROLLBACK=0
+        break
+        ;;
+      5)
+        ROLLBACK=1
+        return 0
+        ;;
+      *)
+        printf '请输入 1-5。\n'
+        ;;
+    esac
+  done
+
+  if prompt_yes_no "是否进行公网、延迟、丢包自动探测？" "y"; then
+    NO_NETWORK=0
+  else
+    NO_NETWORK=1
+  fi
+
+  if [ "$NO_NETWORK" -eq 0 ]; then
+    while true; do
+      cat <<'EOF'
+
+请选择主要客户端地区：
+  1) 中国大陆（推荐：自动按国内线路计算）
+  2) 亚洲
+  3) 全球
+  4) 美国
+  5) 欧洲
+  6) 自定义探测目标
+EOF
+      prompt_read "地区 [1]: "
+      case "${PROMPT_REPLY:-1}" in
+        1|"")
+          REGION="china"
+          break
+          ;;
+        2)
+          REGION="asia"
+          break
+          ;;
+        3)
+          REGION="global"
+          break
+          ;;
+        4)
+          REGION="us"
+          break
+          ;;
+        5)
+          REGION="eu"
+          break
+          ;;
+        6)
+          REGION="custom"
+          prompt_read "请输入探测目标，例如 ct=202.96.128.86,cu=202.106.0.20: "
+          TARGETS_RAW="$PROMPT_REPLY"
+          break
+          ;;
+        *)
+          printf '请输入 1-6。\n'
+          ;;
+      esac
+    done
+
+    if [ "$REGION" = "china" ] && [ -z "$TARGETS_RAW" ]; then
+      while true; do
+        cat <<'EOF'
+
+中国线路探测目标：
+  1) 中国三网九点：电信/联通/移动，北京/上海/广东（推荐）
+  2) 简洁公共 DNS：阿里/腾讯/114/百度（更快，但可能被 Anycast 影响）
+  3) 手动输入
+EOF
+        prompt_read "目标 [1]: "
+        case "${PROMPT_REPLY:-1}" in
+          1|"")
+            TARGETS_RAW="$(china_precise_targets)"
+            break
+            ;;
+          2)
+            TARGETS_RAW=""
+            break
+            ;;
+          3)
+            prompt_read "请输入探测目标，例如 ct-bj=219.141.136.10,cm-gd=211.136.192.6: "
+            TARGETS_RAW="$PROMPT_REPLY"
+            break
+            ;;
+          *)
+            printf '请输入 1-3。\n'
+            ;;
+        esac
+      done
+    fi
+  fi
+
+  while true; do
+    cat <<'EOF'
+
+请选择服务器套餐带宽：
+  1) 自动识别/不知道（识别不到会按 1000 Mbps 估算）
+  2) 100 Mbps
+  3) 200 Mbps
+  4) 500 Mbps
+  5) 1000 Mbps / 1Gbps
+  6) 2500 Mbps / 2.5Gbps
+  7) 10000 Mbps / 10Gbps
+  8) 手动输入
+EOF
+    prompt_read "带宽 [1]: "
+    case "${PROMPT_REPLY:-1}" in
+      1|"")
+        TARGET_BANDWIDTH_MBPS=""
+        break
+        ;;
+      2)
+        TARGET_BANDWIDTH_MBPS="100"
+        break
+        ;;
+      3)
+        TARGET_BANDWIDTH_MBPS="200"
+        break
+        ;;
+      4)
+        TARGET_BANDWIDTH_MBPS="500"
+        break
+        ;;
+      5)
+        TARGET_BANDWIDTH_MBPS="1000"
+        break
+        ;;
+      6)
+        TARGET_BANDWIDTH_MBPS="2500"
+        break
+        ;;
+      7)
+        TARGET_BANDWIDTH_MBPS="10000"
+        break
+        ;;
+      8)
+        while true; do
+          prompt_read "请输入带宽 Mbps，例如 1000: "
+          if is_number "$PROMPT_REPLY"; then
+            TARGET_BANDWIDTH_MBPS="$PROMPT_REPLY"
+            break
+          fi
+          printf '带宽必须是数字。\n'
+        done
+        break
+        ;;
+      *)
+        printf '请输入 1-8。\n'
+        ;;
+    esac
+  done
+
+  while true; do
+    cat <<'EOF'
+
+请选择代理协议类型：
+  1) mixed：混合/不确定（推荐）
+  2) tcp：Xray/Reality/WS/gRPC/Nginx/Haproxy 等 TCP 类
+  3) quic：Hysteria2/TUIC/HTTP3 等 QUIC/UDP 类
+EOF
+    prompt_read "协议 [1]: "
+    case "${PROMPT_REPLY:-1}" in
+      1|"")
+        PROTOCOL="mixed"
+        break
+        ;;
+      2)
+        PROTOCOL="tcp"
+        break
+        ;;
+      3)
+        PROTOCOL="quic"
+        break
+        ;;
+      *)
+        printf '请输入 1-3。\n'
+        ;;
+    esac
+  done
+
+  while true; do
+    cat <<'EOF'
+
+请选择优化目标：
+  1) throughput：极致吞吐/测速优先（跨境代理推荐）
+  2) balanced：稳定均衡
+  3) latency：低延迟/交互优先
+  4) concurrency：高并发/多人使用
+EOF
+    prompt_read "目标 [1]: "
+    case "${PROMPT_REPLY:-1}" in
+      1|"")
+        PROFILE="throughput"
+        break
+        ;;
+      2)
+        PROFILE="balanced"
+        break
+        ;;
+      3)
+        PROFILE="latency"
+        break
+        ;;
+      4)
+        PROFILE="concurrency"
+        break
+        ;;
+      *)
+        printf '请输入 1-4。\n'
+        ;;
+    esac
+  done
+
+  while true; do
+    prompt_read "预计同时活跃用户/高速连接数 [4]: "
+    [ -z "$PROMPT_REPLY" ] && PROMPT_REPLY="4"
+    if is_integer "$PROMPT_REPLY" && [ "$PROMPT_REPLY" -ge 1 ]; then
+      CONCURRENCY="$PROMPT_REPLY"
+      break
+    fi
+    printf '并发数必须是正整数。\n'
+  done
+
+  while true; do
+    cat <<'EOF'
+
+请选择探测精度：
+  1) 快速：每个目标 ping 6 次
+  2) 标准：每个目标 ping 12 次（推荐）
+  3) 精细：每个目标 ping 30 次
+EOF
+    prompt_read "精度 [2]: "
+    case "${PROMPT_REPLY:-2}" in
+      1)
+        PING_COUNT=6
+        break
+        ;;
+      2|"")
+        PING_COUNT=12
+        break
+        ;;
+      3)
+        PING_COUNT=30
+        break
+        ;;
+      *)
+        printf '请输入 1-3。\n'
+        ;;
+    esac
+  done
+
+  if prompt_yes_no "是否启用深度路由检测 mtr/tracepath？会更慢。" "n"; then
+    DEEP=1
+  else
+    DEEP=0
+  fi
+
+  if prompt_yes_no "是否打开高级设置？" "n"; then
+    prompt_read "拥塞控制算法 [bbr]: "
+    [ -n "$PROMPT_REPLY" ] && REQUESTED_CC="$(to_lower "$PROMPT_REPLY")"
+
+    while true; do
+      prompt_read "ping 超时时间秒数 [2]: "
+      [ -z "$PROMPT_REPLY" ] && PROMPT_REPLY="2"
+      if is_integer "$PROMPT_REPLY" && [ "$PROMPT_REPLY" -ge 1 ]; then
+        PING_TIMEOUT="$PROMPT_REPLY"
+        break
+      fi
+      printf '超时时间必须是正整数。\n'
+    done
+
+    while true; do
+      prompt_read "MTR 轮数 [30]: "
+      [ -z "$PROMPT_REPLY" ] && PROMPT_REPLY="30"
+      if is_integer "$PROMPT_REPLY" && [ "$PROMPT_REPLY" -ge 1 ]; then
+        MTR_COUNT="$PROMPT_REPLY"
+        break
+      fi
+      printf 'MTR 轮数必须是正整数。\n'
+    done
+
+    prompt_read "sysctl 配置路径 [$CONF_PATH]: "
+    [ -n "$PROMPT_REPLY" ] && CONF_PATH="$PROMPT_REPLY"
+
+    if prompt_yes_no "应用时是否立即把当前网卡 qdisc 切到 fq？" "y"; then
+      LIVE_QDISC=1
+    else
+      LIVE_QDISC=0
+    fi
+  fi
+
+  printf '\n即将使用以下设置：\n'
+  printf '  模式: %s\n' "$([ "$APPLY" -eq 1 ] && printf '检测并应用' || { [ "$SHOW_CONFIG" -eq 1 ] && printf '只打印配置' || { [ "$JSON" -eq 1 ] && printf 'JSON 输出' || printf '只生成报告'; }; })"
+  printf '  地区: %s\n' "$REGION"
+  printf '  探测目标: %s\n' "${TARGETS_RAW:-自动预设}"
+  printf '  带宽: %s\n' "${TARGET_BANDWIDTH_MBPS:-自动识别/默认 1000 Mbps}"
+  printf '  协议/目标: %s / %s\n' "$PROTOCOL" "$PROFILE"
+  printf '  并发: %s\n' "$CONCURRENCY"
+  printf '  ping 次数: %s\n' "$PING_COUNT"
+  printf '  深度检测: %s\n' "$([ "$DEEP" -eq 1 ] && printf '开启' || printf '关闭')"
+  printf '  网络探测: %s\n' "$([ "$NO_NETWORK" -eq 1 ] && printf '跳过' || printf '开启')"
+
+  if ! prompt_yes_no "开始执行？" "y"; then
+    printf '已取消。\n'
+    exit 0
+  fi
 }
 
 fetch_url() {
@@ -918,7 +1330,8 @@ print_report() {
   if [ "$APPLY" -eq 1 ]; then
     printf '  Applying config to %s\n' "$CONF_PATH"
   else
-    printf '  To apply: sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$0" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
+    printf '  Interactive apply: sudo bash %s --interactive\n' "$0"
+    printf '  CLI apply: sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$0" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
     printf '  To verify after applying: sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc && ss -tin | grep -i bbr\n'
   fi
 }
@@ -1089,11 +1502,22 @@ rollback_config() {
 }
 
 parse_args() {
+  local original_argc="$#"
+  if [ "$original_argc" -eq 0 ] && can_prompt; then
+    INTERACTIVE=1
+  fi
+
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --help|-h)
         usage
         exit 0
+        ;;
+      --interactive|-i)
+        INTERACTIVE=1
+        ;;
+      --non-interactive)
+        INTERACTIVE=0
         ;;
       --apply)
         APPLY=1
@@ -1172,6 +1596,14 @@ parse_args() {
     shift
   done
 
+  if [ "$INTERACTIVE" -eq 1 ]; then
+    interactive_wizard
+  fi
+
+  validate_options
+}
+
+validate_options() {
   if ! is_number "$TARGET_BANDWIDTH_MBPS" && [ -n "$TARGET_BANDWIDTH_MBPS" ]; then
     printf 'ERROR: --bandwidth must be a number in Mbps.\n' >&2
     exit 2
