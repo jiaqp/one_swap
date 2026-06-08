@@ -71,6 +71,15 @@ read_user_input() {
     fi
 }
 
+read_required_input() {
+    local var_name=$1
+    if ! read_user_input "$var_name"; then
+        echo ""
+        print_error "未读取到输入。请在交互式终端运行脚本，例如: sudo bash sniproxy_install.sh"
+        exit 1
+    fi
+}
+
 ensure_root() {
     if [ "$(id -u)" -ne 0 ]; then
         print_error "此脚本需要 root 权限运行。请使用 sudo 或以 root 用户身份运行。"
@@ -207,7 +216,7 @@ manage_client_allowlist() {
     echo -n "请输入选项 [0-3]: "
 
     local action
-    read_user_input action
+    read_required_input action
     action=$(echo "$action" | xargs 2>/dev/null || echo "")
 
     case "$action" in
@@ -218,7 +227,7 @@ manage_client_allowlist() {
             echo -n "允许 IP/CIDR: "
 
             local input_ips
-            read_user_input input_ips
+            read_required_input input_ips
             input_ips=$(echo "$input_ips" | tr ',' ' ')
 
             local allowed_ips=()
@@ -275,7 +284,7 @@ ask_initial_allowlist() {
         echo -n "是否继续应用此白名单？(Y/n): "
 
         local keep_answer
-        read_user_input keep_answer
+        read_required_input keep_answer
         keep_answer=$(echo "$keep_answer" | xargs 2>/dev/null || echo "")
 
         if [[ "$keep_answer" =~ ^[Nn]$ ]]; then
@@ -295,7 +304,7 @@ ask_initial_allowlist() {
     echo -n "是否现在设置指定允许 IP？(y/N): "
 
     local answer
-    read_user_input answer
+    read_required_input answer
     answer=$(echo "$answer" | xargs 2>/dev/null || echo "")
 
     if [[ "$answer" =~ ^[Yy]$ ]]; then
@@ -484,7 +493,7 @@ show_menu() {
 
 while true; do
     show_menu
-    read_user_input choice
+    read_required_input choice
     choice=$(echo "$choice" | xargs 2>/dev/null || echo "")
 
     case "$choice" in
