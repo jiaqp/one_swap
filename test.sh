@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.8.0"
+VERSION="1.11.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -25,7 +25,7 @@ QUIET_REQUESTED=0
 
 REGION="china"
 TARGETS_RAW=""
-CHINA_CARRIER="public"
+CHINA_CARRIER="all"
 PING_COUNT=12
 PING_TIMEOUT=2
 MTR_COUNT=30
@@ -82,6 +82,10 @@ RECOMMENDED_CONNTRACK=""
 RECOMMENDED_FILE_MAX=""
 LINE_QUALITY=""
 PING_COMMAND_MISSING_NOTED=0
+PROBE_TOTAL=0
+PROBE_OK=0
+PROBE_FAILED=0
+PROBE_SUCCESS_PERCENT=""
 
 TARGET_LABELS=()
 TARGET_HOSTS=()
@@ -127,7 +131,7 @@ bbr-auto-tune.sh - 面向代理服务器的 BBR/TCP 自动优化计算脚本
 可覆盖的输入：
   --region NAME           主要客户端地区。默认 china。
                           可选：china, global, asia, us, eu。
-  --china-carrier NAME    中国大陆探测线路。可选：all, ct, cu, cm, public。
+  --china-carrier NAME    中国大陆探测线路。默认 all。可选：all, ct, cu, cm, public。
                           all=三网九点，ct=电信，cu=联通，cm=移动，public=公共 DNS。
   --targets LIST          自定义 ping 探测目标，用英文逗号分隔。
                           示例：--targets "ct=202.96.128.86,ali=223.5.5.5"
@@ -143,7 +147,7 @@ bbr-auto-tune.sh - 面向代理服务器的 BBR/TCP 自动优化计算脚本
   --ping-count N          每个目标 ping 次数。默认 12。
   --ping-timeout SEC      每个 ping 包超时时间，单位秒。默认 2。
   --rtt-method NAME       有效 RTT 计算方式。默认 avg。
-                          可选：avg=平均值，cleanavg=低丢包平均值，p75=保守 P75，max=最慢成功目标。
+                          可选：avg=按收到包数加权平均，cleanavg=低丢包加权平均，p75=保守 P75，max=最慢成功目标。
   --mtr-count N           深度检测时 MTR 轮数。默认 30。
 
 应用选项：
@@ -694,8 +698,8 @@ EOF
     cat <<'EOF'
 
 请选择有效 RTT 计算方式：
-  1) 平均值：成功目标 avg RTT 的平均值（推荐，更稳定）
-  2) 低丢包平均值：只平均丢包低于 10% 的成功目标
+  1) 加权平均值：成功目标按实际收到的 ping 包数量加权（推荐，更稳定）
+  2) 低丢包加权平均：只使用丢包低于 10% 的成功目标
   3) 保守 P75：偏向较慢线路，buffer 会更保守
   4) 最慢成功目标：最保守，适合只想兜底
 EOF
@@ -1225,6 +1229,22 @@ average_from_args() {
     }'
 }
 
+weighted_average_from_args() {
+  [ "$#" -eq 0 ] && return 1
+  printf '%s\n' "$@" | awk -F: '
+    NF >= 2 {
+      value = $1
+      weight = $2
+      if (weight <= 0) weight = 1
+      sum += value * weight
+      total_weight += weight
+    }
+    END {
+      if (total_weight <= 0) exit 1
+      printf "%.3f\n", sum / total_weight
+    }'
+}
+
 max_from_args() {
   [ "$#" -eq 0 ] && return 1
   printf '%s\n' "$@" | awk '
@@ -1240,8 +1260,8 @@ max_from_args() {
 
 cn_rtt_method() {
   case "${1:-avg}" in
-    avg) printf '成功目标平均值(avg)' ;;
-    cleanavg) printf '低丢包目标平均值(cleanavg)' ;;
+    avg) printf '成功目标加权平均值(avg)' ;;
+    cleanavg) printf '低丢包目标加权平均值(cleanavg)' ;;
     p75) printf '保守 P75(p75)' ;;
     max) printf '最慢成功目标(max)' ;;
     *) printf '%s' "$1" ;;
@@ -1262,18 +1282,41 @@ fallback_rtt_for_region() {
 derive_effective_path() {
   local rtts=()
   local clean_rtts=()
+  local weighted_rtts=()
+  local clean_weighted_rtts=()
   local losses=()
   local jitters=()
   local i
 
+  PROBE_TOTAL="${#PING_STATUS[@]}"
+  PROBE_OK=0
+  PROBE_FAILED=0
+
   for ((i=0; i<${#PING_AVG[@]}; i++)); do
+    case "${PING_STATUS[$i]:-}" in
+      ok)
+        PROBE_OK=$((PROBE_OK + 1))
+        ;;
+      failed|no-ping)
+        PROBE_FAILED=$((PROBE_FAILED + 1))
+        ;;
+    esac
+
     if is_number "${PING_AVG[$i]:-}"; then
       rtts+=("${PING_AVG[$i]}")
       local loss_value
+      local reply_weight
       loss_value="$(positive_or_default "${PING_LOSS[$i]:-}" 0)"
       losses+=("$loss_value")
+      reply_weight="$(awk -v count="$PING_COUNT" -v loss="$loss_value" 'BEGIN {
+        weight = count * (100 - loss) / 100
+        if (weight < 1) weight = 1
+        printf "%.3f\n", weight
+      }')"
+      weighted_rtts+=("${PING_AVG[$i]}:${reply_weight}")
       if awk -v loss="$loss_value" 'BEGIN { exit !(loss < 10) }'; then
         clean_rtts+=("${PING_AVG[$i]}")
+        clean_weighted_rtts+=("${PING_AVG[$i]}:${reply_weight}")
       fi
       if is_number "${PING_JITTER[$i]:-}"; then
         jitters+=("${PING_JITTER[$i]}")
@@ -1284,13 +1327,13 @@ derive_effective_path() {
   if [ "${#rtts[@]}" -gt 0 ]; then
     case "$RTT_METHOD" in
       avg)
-        EFFECTIVE_RTT_MS="$(average_from_args "${rtts[@]}" 2>/dev/null || true)"
+        EFFECTIVE_RTT_MS="$(weighted_average_from_args "${weighted_rtts[@]}" 2>/dev/null || true)"
         ;;
       cleanavg)
-        if [ "${#clean_rtts[@]}" -gt 0 ]; then
-          EFFECTIVE_RTT_MS="$(average_from_args "${clean_rtts[@]}" 2>/dev/null || true)"
+        if [ "${#clean_weighted_rtts[@]}" -gt 0 ]; then
+          EFFECTIVE_RTT_MS="$(weighted_average_from_args "${clean_weighted_rtts[@]}" 2>/dev/null || true)"
         else
-          EFFECTIVE_RTT_MS="$(average_from_args "${rtts[@]}" 2>/dev/null || true)"
+          EFFECTIVE_RTT_MS="$(weighted_average_from_args "${weighted_rtts[@]}" 2>/dev/null || true)"
           add_warning "没有丢包低于 10% 的成功目标，RTT 计算已从 cleanavg 回退到 avg。"
         fi
         ;;
@@ -1319,6 +1362,24 @@ derive_effective_path() {
   fi
   if ! is_number "$EFFECTIVE_JITTER_MS"; then
     EFFECTIVE_JITTER_MS="0"
+  fi
+
+  if [ "$PROBE_TOTAL" -gt 0 ]; then
+    PROBE_SUCCESS_PERCENT="$(awk -v ok="$PROBE_OK" -v total="$PROBE_TOTAL" 'BEGIN { printf "%.1f\n", ok * 100 / total }')"
+    if [ "$PROBE_FAILED" -gt 0 ]; then
+      add_warning "共有 ${PROBE_TOTAL} 个探测目标，其中 ${PROBE_FAILED} 个失败。有效 RTT 只基于成功目标计算，失败目标可能是线路不可达，也可能是目标禁 ping。"
+    fi
+    if awk -v pct="$PROBE_SUCCESS_PERCENT" 'BEGIN { exit !(pct < 50) }'; then
+      add_warning "探测成功率只有 ${PROBE_SUCCESS_PERCENT}%，当前计算结果可信度较低。建议换用单网目标或真实用户 IP。"
+    fi
+  fi
+
+  if is_number "$EFFECTIVE_LOSS_PERCENT"; then
+    if awk -v loss="$EFFECTIVE_LOSS_PERCENT" 'BEGIN { exit !(loss >= 10) }'; then
+      add_warning "有效丢包率达到 ${EFFECTIVE_LOSS_PERCENT}%。这属于严重线路质量问题，BBR/sysctl 参数只能缓解，不能真正修复。"
+    elif awk -v loss="$EFFECTIVE_LOSS_PERCENT" 'BEGIN { exit !(loss >= 3) }'; then
+      add_warning "有效丢包率为 ${EFFECTIVE_LOSS_PERCENT}%，线路质量偏差。建议优先检查线路/运营商/晚高峰表现。"
+    fi
   fi
 }
 
@@ -1449,11 +1510,26 @@ calculate_recommendations() {
     add_warning "推荐 buffer 已受内存策略限制：算法期望约 $(format_float "$RAW_BUFFER_MB" 1) MB，实际限制为 ${RECOMMENDED_BUFFER_MB} MB。"
   fi
 
-  if [ "$PROTOCOL" = "quic" ] || [ "$PROTOCOL" = "mixed" ]; then
-    RECOMMENDED_DEFAULT_BYTES="$(awk -v mb="$RECOMMENDED_BUFFER_MB" 'BEGIN { d = mb / 16; if (d < 1) d = 1; if (d > 8) d = 8; printf "%.0f\n", d * 1024 * 1024 }')"
-  else
-    RECOMMENDED_DEFAULT_BYTES="$(awk -v mb="$RECOMMENDED_BUFFER_MB" 'BEGIN { d = mb / 32; if (d < 1) d = 1; if (d > 4) d = 4; printf "%.0f\n", d * 1024 * 1024 }')"
-  fi
+  RECOMMENDED_DEFAULT_BYTES="$(awk -v mb="$RECOMMENDED_BUFFER_MB" -v protocol="$PROTOCOL" -v c="$CONCURRENCY" -v ram="$RAM_MB" 'BEGIN {
+    if (protocol == "quic" || protocol == "mixed") {
+      d = mb / 16
+      cap = 8
+    } else {
+      d = mb / 32
+      cap = 4
+    }
+
+    if (c >= 2000 && cap > 1) cap = 1
+    else if (c >= 500 && cap > 2) cap = 2
+    else if (c >= 100 && cap > 4) cap = 4
+
+    if (ram > 0 && ram < 2048 && cap > 1) cap = 1
+    else if (ram > 0 && ram < 4096 && cap > 2) cap = 2
+
+    if (d < 1) d = 1
+    if (d > cap) d = cap
+    printf "%.0f\n", d * 1024 * 1024
+  }')"
 
   if awk -v bw="$TARGET_BANDWIDTH_MBPS" -v c="$CONCURRENCY" 'BEGIN { exit !(bw >= 5000 || c >= 500) }'; then
     RECOMMENDED_BACKLOG="250000"
@@ -1770,6 +1846,9 @@ print_report() {
     print_kv "中国线路" "$(cn_china_carrier "$CHINA_CARRIER")"
   fi
   print_kv "RTT 计算方式" "$(cn_rtt_method "$RTT_METHOD")"
+  if [ "$PROBE_TOTAL" -gt 0 ]; then
+    print_kv "探测成功率" "${PROBE_OK}/${PROBE_TOTAL} (${PROBE_SUCCESS_PERCENT}%)"
+  fi
   print_kv "并发数" "$CONCURRENCY"
   print_kv "有效 RTT" "${EFFECTIVE_RTT_MS} ms"
   print_kv "有效丢包" "${EFFECTIVE_LOSS_PERCENT}%"
@@ -1779,6 +1858,7 @@ print_report() {
   print_kv "丢包系数" "$LOSS_FACTOR"
   print_kv "原始 buffer 目标" "$(format_float "$RAW_BUFFER_MB" 1) MB"
   print_kv "推荐 buffer" "${RECOMMENDED_BUFFER_MB} MB (${RECOMMENDED_BUFFER_BYTES} bytes)"
+  print_kv "默认 buffer" "$((RECOMMENDED_DEFAULT_BYTES / 1024 / 1024)) MB (${RECOMMENDED_DEFAULT_BYTES} bytes)"
   print_kv "backlog" "$RECOMMENDED_BACKLOG"
   print_kv "conntrack 上限" "$RECOMMENDED_CONNTRACK"
 
@@ -1861,6 +1941,10 @@ print_json() {
   printf '    "profile": "%s",\n' "$(json_escape "$PROFILE")"
   printf '    "protocol": "%s",\n' "$(json_escape "$PROTOCOL")"
   printf '    "rtt_method": "%s",\n' "$(json_escape "$RTT_METHOD")"
+  printf '    "probe_total": %s,\n' "$PROBE_TOTAL"
+  printf '    "probe_ok": %s,\n' "$PROBE_OK"
+  printf '    "probe_failed": %s,\n' "$PROBE_FAILED"
+  printf '    "probe_success_percent": "%s",\n' "$(json_escape "$PROBE_SUCCESS_PERCENT")"
   printf '    "concurrency": %s,\n' "$CONCURRENCY"
   printf '    "effective_rtt_ms": "%s",\n' "$(json_escape "$EFFECTIVE_RTT_MS")"
   printf '    "effective_loss_percent": "%s",\n' "$(json_escape "$EFFECTIVE_LOSS_PERCENT")"
@@ -1871,6 +1955,7 @@ print_json() {
   printf '    "raw_buffer_mb": "%s",\n' "$(json_escape "$RAW_BUFFER_MB")"
   printf '    "recommended_buffer_mb": "%s",\n' "$(json_escape "$RECOMMENDED_BUFFER_MB")"
   printf '    "recommended_buffer_bytes": "%s",\n' "$(json_escape "$RECOMMENDED_BUFFER_BYTES")"
+  printf '    "recommended_default_bytes": "%s",\n' "$(json_escape "$RECOMMENDED_DEFAULT_BYTES")"
   printf '    "backlog": "%s",\n' "$(json_escape "$RECOMMENDED_BACKLOG")"
   printf '    "conntrack_max": "%s"\n' "$(json_escape "$RECOMMENDED_CONNTRACK")"
   printf '  },\n'
