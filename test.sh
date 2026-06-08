@@ -64,11 +64,10 @@ validate_ip_or_cidr() {
 
 read_user_input() {
     local var_name=$1
-    if [ -t 0 ] && [ -e /dev/tty ]; then
-        read -r "$var_name" </dev/tty 2>/dev/null || read -r "$var_name"
-    else
-        read -r "$var_name"
+    if [ -r /dev/tty ]; then
+        { read -r "$var_name" < /dev/tty; } 2>/dev/null && return 0
     fi
+    read -r "$var_name"
 }
 
 read_required_input() {
