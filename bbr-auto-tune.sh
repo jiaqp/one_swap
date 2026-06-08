@@ -310,11 +310,11 @@ ensure_detection_tools() {
 }
 
 china_ct_targets() {
-  printf '%s' 'ct-bj=219.141.136.10,ct-sh=202.96.209.133,ct-gd=202.96.128.86'
+  printf '%s' 'ct-cd=222.88.88.88,ct-sh=202.96.209.133,ct-gd=202.96.128.86'
 }
 
 china_cu_targets() {
-  printf '%s' 'cu-bj=202.106.0.20,cu-sh=210.22.70.3,cu-gd=221.5.88.88'
+  printf '%s' 'cu-hb=202.99.160.68,cu-cc=202.98.0.68,cu-gd=221.5.88.88'
 }
 
 china_cm_targets() {
