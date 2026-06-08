@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.1.0"
+VERSION="1.3.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -20,6 +20,8 @@ DEEP=0
 SPEEDTEST=0
 LIVE_QDISC=1
 INTERACTIVE=0
+PROGRESS=0
+QUIET_REQUESTED=0
 
 REGION="china"
 TARGETS_RAW=""
@@ -93,59 +95,59 @@ NOTES=()
 
 usage() {
   cat <<'EOF'
-bbr-auto-tune.sh - automatic BBR/network tuning calculator for proxy servers
+bbr-auto-tune.sh - 面向代理服务器的 BBR/TCP 自动优化计算脚本
 
-Usage:
+用法：
   bash bbr-auto-tune.sh
   sudo bash bbr-auto-tune.sh --interactive
   bash bbr-auto-tune.sh --bandwidth 1000 --region china --profile throughput
 
-Safe by default:
-  Running the script directly opens a Chinese interactive wizard when a TTY is
-  available. Without --apply, it only detects, measures, calculates, and prints
-  a recommended sysctl config. It does not modify the system.
+默认安全：
+  直接运行脚本会进入中文向导。未选择 --apply 时，只检测、测速、计算并打印推荐配置，
+  不会修改系统。
 
-Common options:
-  --interactive, -i       Open the Chinese menu wizard.
-  --non-interactive       Never prompt; use CLI values and automatic defaults.
-  --apply                 Write config and apply it with sysctl.
-  --rollback              Restore the newest backup of the config path.
-  --show-config           Print only the recommended sysctl config.
-  --json                  Print a machine-readable JSON report.
-  --no-network            Skip public IP and ping/MTR/tracepath detection.
-  --deep                  Run extra MTR/tracepath checks when available.
-  --no-live-qdisc         Do not run 'tc qdisc replace dev IFACE root fq'
-                          during --apply. Sysctl config is still written.
+常用选项：
+  --interactive, -i       打开中文菜单向导。
+  --non-interactive       不询问，使用命令行参数和自动默认值。
+  --progress              实时显示检测进度。
+  --quiet                 关闭实时进度提示。
+  --apply                 写入配置并执行 sysctl 应用。
+  --rollback              回滚到最近一次备份。
+  --show-config           只打印推荐的 sysctl 配置。
+  --json                  输出机器可读的 JSON 报告。
+  --no-network            跳过公网 IP、ping、MTR、tracepath 检测。
+  --deep                  开启更深入的 MTR/tracepath 检测。
+  --no-live-qdisc         应用时不立即执行 'tc qdisc replace dev IFACE root fq'。
+                          sysctl 配置仍会写入。
 
-Inputs you may override:
-  --region NAME           Target client region preset. Default: china.
-                          Presets: china, global, asia, us, eu.
-  --targets LIST          Custom ping targets, comma-separated.
-                          Example: --targets "ct=202.96.128.86,ali=223.5.5.5"
-  --bandwidth MBPS        Target server bandwidth in Mbps.
-                          If omitted, ethtool speed is used when credible,
-                          otherwise 1000 Mbps is assumed.
-  --concurrency N         Expected active users/high-speed flows. Default: 4.
-  --protocol NAME         tcp, quic, or mixed. Default: mixed.
-  --profile NAME          balanced, throughput, latency, or concurrency.
-                          Default: balanced.
-  --cc NAME               Congestion control to recommend. Default: bbr.
+可覆盖的输入：
+  --region NAME           主要客户端地区。默认 china。
+                          可选：china, global, asia, us, eu。
+  --targets LIST          自定义 ping 探测目标，用英文逗号分隔。
+                          示例：--targets "ct=202.96.128.86,ali=223.5.5.5"
+  --bandwidth MBPS        服务器套餐带宽，单位 Mbps。
+                          不填写时优先尝试 ethtool，识别不到则按 1000 Mbps 估算。
+  --concurrency N         预计同时活跃用户/高速连接数。默认 4。
+  --protocol NAME         代理协议类型：tcp, quic, mixed。默认 mixed。
+  --profile NAME          优化目标：balanced, throughput, latency, concurrency。
+                          默认 balanced。
+  --cc NAME               推荐使用的拥塞控制算法。默认 bbr。
 
-Measurement options:
-  --ping-count N          Ping count per target. Default: 12.
-  --ping-timeout SEC      Ping timeout per packet. Default: 2.
-  --mtr-count N           MTR cycles in --deep mode. Default: 30.
+检测选项：
+  --ping-count N          每个目标 ping 次数。默认 12。
+  --ping-timeout SEC      每个 ping 包超时时间，单位秒。默认 2。
+  --mtr-count N           深度检测时 MTR 轮数。默认 30。
 
-Apply options:
-  --config-path PATH      Sysctl config path.
-                          Default: /etc/sysctl.d/99-bbr-auto-tune.conf
+应用选项：
+  --config-path PATH      sysctl 配置路径。
+                          默认：/etc/sysctl.d/99-bbr-auto-tune.conf
 
-Recommended workflow:
+推荐流程：
   1. bash bbr-auto-tune.sh
-  2. Follow the Chinese menu and generate a report first.
-  3. Re-run with sudo and choose "apply" in the menu.
-  4. Verify: sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
-     and: ss -tin | grep -i bbr
+  2. 按中文菜单先生成报告。
+  3. 确认没问题后，用 sudo 重新运行并在菜单里选择“应用优化”。
+  4. 验证：sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc
+     以及：ss -tin | grep -i bbr
 
 EOF
 }
@@ -156,6 +158,16 @@ add_warning() {
 
 add_note() {
   NOTES+=("$*")
+}
+
+progress() {
+  [ "$PROGRESS" -eq 1 ] || return 0
+  printf '[%s] %s\n' "$(date '+%H:%M:%S' 2>/dev/null || printf now)" "$*" >&2
+}
+
+progress_inline() {
+  [ "$PROGRESS" -eq 1 ] || return 0
+  printf '[%s] %s' "$(date '+%H:%M:%S' 2>/dev/null || printf now)" "$*" >&2
 }
 
 command_exists() {
@@ -229,9 +241,11 @@ china_precise_targets() {
 
 interactive_wizard() {
   if ! can_prompt; then
-    printf 'ERROR: interactive mode needs a terminal. Download the script and run it in a shell, or use --non-interactive.\n' >&2
+    printf '错误：交互模式需要终端。请下载脚本后在 shell 里运行，或使用 --non-interactive。\n' >&2
     exit 2
   fi
+
+  [ "$QUIET_REQUESTED" -eq 1 ] || PROGRESS=1
 
   printf '\nBBR Auto Tune 中文向导 v%s\n' "$VERSION"
   printf '直接回车使用推荐值；默认先生成报告，不会修改系统。\n\n'
@@ -578,11 +592,13 @@ EOF
   printf '  ping 次数: %s\n' "$PING_COUNT"
   printf '  深度检测: %s\n' "$([ "$DEEP" -eq 1 ] && printf '开启' || printf '关闭')"
   printf '  网络探测: %s\n' "$([ "$NO_NETWORK" -eq 1 ] && printf '跳过' || printf '开启')"
+  printf '  实时进度: %s\n' "$([ "$PROGRESS" -eq 1 ] && printf '开启' || printf '关闭')"
 
   if ! prompt_yes_no "开始执行？" "y"; then
     printf '已取消。\n'
     exit 0
   fi
+  printf '\n'
 }
 
 fetch_url() {
@@ -707,7 +723,7 @@ load_targets() {
       add_target "opendns" "208.67.222.222"
       ;;
     *)
-      add_warning "Unknown region preset '$REGION'; using China preset. Use --targets for exact probes."
+      add_warning "未知地区预设 '$REGION'，已改用中国预设。如需精确探测，请使用 --targets。"
       add_target "aliyun-dns-cn" "223.5.5.5"
       add_target "dnspod-cn" "119.29.29.29"
       add_target "114dns-cn" "114.114.114.114"
@@ -723,7 +739,7 @@ detect_platform() {
     IS_LINUX=1
   else
     IS_LINUX=0
-    add_warning "This script is designed for Linux servers. Report mode can run here, but --apply is blocked on non-Linux systems."
+    add_warning "此脚本面向 Linux 服务器。当前系统只能生成报告，非 Linux 系统禁止使用 --apply。"
   fi
 }
 
@@ -758,7 +774,7 @@ detect_system() {
     RAM_MB="$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f\n", $1 / 1024 / 1024}')"
   fi
   is_integer "$RAM_MB" || RAM_MB=0
-  [ "$RAM_MB" -eq 0 ] && add_warning "Could not detect RAM size; using conservative memory caps."
+  [ "$RAM_MB" -eq 0 ] && add_warning "未能检测到内存大小，已使用保守内存上限。"
 
   if command_exists systemd-detect-virt; then
     VIRT_TYPE="$(systemd-detect-virt 2>/dev/null || printf none)"
@@ -790,7 +806,7 @@ detect_public_network() {
       PUBLIC_ASN="$(printf '%s' "$org" | awk '{for (i=1;i<=NF;i++) if ($i ~ /^AS[0-9]+$/) {print $i; exit}}')"
     fi
   else
-    add_warning "Could not fetch public IP/ASN data. Install curl/wget or use --no-network if intentional."
+    add_warning "未能获取公网 IP/ASN 信息。请安装 curl/wget；如果是有意跳过网络检测，可使用 --no-network。"
   fi
 
   if command_exists curl; then
@@ -839,6 +855,8 @@ measure_ping_target() {
   local host="$2"
   local out loss min avg max jitter status wait_arg
 
+  progress "Ping 开始: ${label} (${host})，次数 ${PING_COUNT}，单包超时 ${PING_TIMEOUT}s"
+
   if ! command_exists ping; then
     PING_LABELS+=("$label")
     PING_HOSTS+=("$host")
@@ -848,6 +866,7 @@ measure_ping_target() {
     PING_AVG+=("")
     PING_MAX+=("")
     PING_JITTER+=("")
+    progress "Ping 跳过: 系统没有 ping 命令"
     return 0
   fi
 
@@ -884,36 +903,46 @@ measure_ping_target() {
   PING_AVG+=("$avg")
   PING_MAX+=("$max")
   PING_JITTER+=("$jitter")
+
+  if [ "$status" = "ok" ]; then
+    progress "Ping 完成: $label loss=${loss}% avg=${avg}ms min=${min}ms max=${max}ms jitter=${jitter:-0}ms"
+  else
+    progress "Ping 失败: $label loss=${loss}% 这个目标会在计算时自动降权/忽略"
+  fi
 }
 
 measure_paths() {
   load_targets
 
   if [ "$NO_NETWORK" -eq 1 ]; then
-    add_note "Network measurement skipped by --no-network."
+    add_note "已按 --no-network 跳过网络探测。"
     return 0
   fi
 
   if [ "${#TARGET_HOSTS[@]}" -eq 0 ]; then
-    add_warning "No measurement targets were configured."
+    add_warning "没有配置任何探测目标。"
     return 0
   fi
 
+  progress "网络探测开始: 共 ${#TARGET_HOSTS[@]} 个目标"
   local i
   for ((i=0; i<${#TARGET_HOSTS[@]}; i++)); do
+    progress "目标 $((i + 1))/${#TARGET_HOSTS[@]}"
     measure_ping_target "${TARGET_LABELS[$i]}" "${TARGET_HOSTS[$i]}"
   done
 
   if [ "$DEEP" -eq 1 ]; then
     run_deep_measurements
   fi
+
+  progress "网络探测完成"
 }
 
 run_deep_measurements() {
   local i label host summary
 
   if ! command_exists mtr && ! command_exists tracepath; then
-    add_note "--deep requested, but neither mtr nor tracepath is installed."
+    add_note "已请求 --deep 深度检测，但系统未安装 mtr 或 tracepath。"
     return 0
   fi
 
@@ -923,13 +952,17 @@ run_deep_measurements() {
     summary=""
 
     if command_exists mtr; then
+      progress "MTR 开始: $label ($host)，轮数 $MTR_COUNT"
       summary="$(mtr -rwzc "$MTR_COUNT" "$host" 2>/dev/null | tail -n 1 | sed 's/[[:space:]]\+/ /g' || true)"
       [ -n "$summary" ] && MTR_SUMMARIES+=("$label mtr: $summary")
+      progress "MTR 完成: $label ${summary:-无摘要}"
     fi
 
     if command_exists tracepath; then
+      progress "tracepath 开始: $label ($host)"
       summary="$(tracepath -n "$host" 2>/dev/null | tail -n 1 | sed 's/[[:space:]]\+/ /g' || true)"
       [ -n "$summary" ] && MTR_SUMMARIES+=("$label tracepath: $summary")
+      progress "tracepath 完成: $label ${summary:-无摘要}"
     fi
   done
 }
@@ -988,11 +1021,11 @@ derive_effective_path() {
 
   if ! is_number "$EFFECTIVE_RTT_MS"; then
     EFFECTIVE_RTT_MS="$(fallback_rtt_for_region)"
-    add_warning "No successful ping measurement; using fallback RTT ${EFFECTIVE_RTT_MS} ms for region '$REGION'."
+    add_warning "没有成功的 ping 探测结果，已按地区 '$REGION' 使用备用 RTT：${EFFECTIVE_RTT_MS} ms。"
   fi
   if ! is_number "$EFFECTIVE_LOSS_PERCENT"; then
     EFFECTIVE_LOSS_PERCENT="1"
-    add_warning "No reliable packet-loss measurement; using fallback loss 1%."
+    add_warning "没有可靠的丢包率数据，已使用备用丢包率 1%。"
   fi
   if ! is_number "$EFFECTIVE_JITTER_MS"; then
     EFFECTIVE_JITTER_MS="0"
@@ -1009,14 +1042,14 @@ choose_bandwidth() {
     TARGET_BANDWIDTH_MBPS="$NIC_SPEED_MBPS"
     BANDWIDTH_SOURCE="ethtool"
     if [ "$NIC_SPEED_MBPS" -ge 10000 ]; then
-      add_warning "NIC reports ${NIC_SPEED_MBPS} Mbps. Virtual NIC speed can exceed the VPS plan; pass --bandwidth if your real plan is lower."
+      add_warning "网卡报告速率为 ${NIC_SPEED_MBPS} Mbps。虚拟网卡速率可能高于 VPS 套餐；如果真实套餐更低，请手动传入 --bandwidth。"
     fi
     return 0
   fi
 
   TARGET_BANDWIDTH_MBPS="1000"
   BANDWIDTH_SOURCE="fallback"
-  add_warning "Could not detect real bandwidth; assuming 1000 Mbps. Pass --bandwidth for best accuracy."
+  add_warning "未能检测真实带宽，暂按 1000 Mbps 估算。为了更准确，请手动传入 --bandwidth。"
 }
 
 loss_factor_for() {
@@ -1122,7 +1155,7 @@ calculate_recommendations() {
   RECOMMENDED_BUFFER_BYTES="$(bytes_from_mb "$RECOMMENDED_BUFFER_MB")"
 
   if awk -v raw="$RAW_BUFFER_MB" -v final="$RECOMMENDED_BUFFER_MB" 'BEGIN { exit !(final < raw) }'; then
-    add_warning "Recommended buffer was capped by RAM policy: wanted about $(format_float "$RAW_BUFFER_MB" 1) MB, capped to ${RECOMMENDED_BUFFER_MB} MB."
+    add_warning "推荐 buffer 已受内存策略限制：算法期望约 $(format_float "$RAW_BUFFER_MB" 1) MB，实际限制为 ${RECOMMENDED_BUFFER_MB} MB。"
   fi
 
   if [ "$PROTOCOL" = "quic" ] || [ "$PROTOCOL" = "mixed" ]; then
@@ -1158,10 +1191,10 @@ calculate_recommendations() {
   LINE_QUALITY="$(classify_quality "$EFFECTIVE_RTT_MS" "$EFFECTIVE_LOSS_PERCENT" "$EFFECTIVE_JITTER_MS")"
 
   if [ "$REQUESTED_CC" = "bbr" ] && [ "$BBR_STATE" = "missing-or-unknown" ]; then
-    add_warning "BBR is not currently listed as available. --apply will try 'modprobe tcp_bbr'; otherwise upgrade/use a kernel with BBR support."
+    add_warning "当前可用拥塞控制算法中未看到 BBR。使用 --apply 时会尝试执行 'modprobe tcp_bbr'；如仍不可用，请升级或更换支持 BBR 的内核。"
   fi
   if [ "$CPU_AES" != "yes" ]; then
-    add_note "AES acceleration was not detected. TLS/Reality/QUIC proxy throughput may be CPU-limited."
+    add_note "未检测到 AES 加速。TLS/Reality/QUIC 类代理吞吐可能受 CPU 限制。"
   fi
 }
 
@@ -1171,21 +1204,21 @@ emit_sysctl_if_exists() {
   if sysctl_key_exists "$key"; then
     printf '%s = %s\n' "$key" "$value"
   else
-    printf '# skipped: %s is not available on this kernel\n' "$key"
+    printf '# 已跳过：当前内核不支持 %s\n' "$key"
   fi
 }
 
 generate_config() {
   cat <<EOF
-# Generated by bbr-auto-tune.sh v$VERSION
-# Generated at: $(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)
-# Profile: $PROFILE
-# Protocol: $PROTOCOL
-# Region: $REGION
-# Target bandwidth: ${TARGET_BANDWIDTH_MBPS} Mbps ($BANDWIDTH_SOURCE)
-# Effective RTT/loss/jitter: ${EFFECTIVE_RTT_MS} ms / ${EFFECTIVE_LOSS_PERCENT}% / ${EFFECTIVE_JITTER_MS} ms
+# 由 bbr-auto-tune.sh v$VERSION 生成
+# 生成时间：$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date)
+# 优化目标：$PROFILE
+# 协议类型：$PROTOCOL
+# 客户端地区：$REGION
+# 目标带宽：${TARGET_BANDWIDTH_MBPS} Mbps ($(cn_source "$BANDWIDTH_SOURCE"))
+# 有效 RTT/丢包/抖动：${EFFECTIVE_RTT_MS} ms / ${EFFECTIVE_LOSS_PERCENT}% / ${EFFECTIVE_JITTER_MS} ms
 # BDP: ${BDP_MB} MB
-# Recommended socket buffer cap: ${RECOMMENDED_BUFFER_MB} MB
+# 推荐 socket buffer 上限：${RECOMMENDED_BUFFER_MB} MB
 
 EOF
 
@@ -1238,47 +1271,115 @@ print_section() {
 }
 
 print_kv() {
-  printf '  %-28s %s\n' "$1:" "${2:-unknown}"
+  local value="${2:-未知}"
+  [ "$value" = "unknown" ] && value="未知"
+  printf '  %-28s %s\n' "$1:" "$value"
+}
+
+cn_aes() {
+  case "${1:-}" in
+    yes) printf '支持' ;;
+    no-or-unknown|"") printf '未检测到/未知' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+cn_bbr_state() {
+  case "${1:-}" in
+    available) printf '可用' ;;
+    loadable) printf '可加载' ;;
+    loaded) printf '已加载' ;;
+    missing-or-unknown|"") printf '缺失或未知' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+cn_quality() {
+  case "${1:-}" in
+    excellent) printf '极好' ;;
+    good) printf '良好' ;;
+    fair) printf '一般' ;;
+    weak) printf '偏弱' ;;
+    poor) printf '较差' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
+}
+
+cn_source() {
+  case "${1:-}" in
+    user) printf '手动输入' ;;
+    ethtool) printf '网卡检测' ;;
+    fallback) printf '默认估算' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
+}
+
+cn_status() {
+  case "${1:-}" in
+    ok) printf '成功' ;;
+    failed) printf '失败' ;;
+    no-ping) printf '无 ping' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
+}
+
+cn_profile() {
+  case "${1:-}" in
+    throughput) printf '极致吞吐(throughput)' ;;
+    balanced) printf '稳定均衡(balanced)' ;;
+    latency) printf '低延迟(latency)' ;;
+    concurrency) printf '高并发(concurrency)' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
+}
+
+cn_protocol() {
+  case "${1:-}" in
+    tcp) printf 'TCP 类(tcp)' ;;
+    quic) printf 'QUIC/UDP 类(quic)' ;;
+    mixed) printf '混合/不确定(mixed)' ;;
+    *) printf '%s' "${1:-未知}" ;;
+  esac
 }
 
 print_report() {
   printf 'BBR Auto Tune v%s\n' "$VERSION"
-  printf 'Mode: %s\n' "$([ "$APPLY" -eq 1 ] && printf apply || printf report)"
+  printf '运行模式：%s\n' "$([ "$APPLY" -eq 1 ] && printf '应用优化' || printf '只生成报告')"
 
-  print_section "System"
-  print_kv "kernel" "$KERNEL_NAME $KERNEL_RELEASE"
-  print_kv "cpu cores" "$CPU_CORES"
-  print_kv "cpu model" "$CPU_MODEL"
-  print_kv "aes acceleration" "$CPU_AES"
-  print_kv "ram" "${RAM_MB} MB"
-  print_kv "virtualization" "$VIRT_TYPE"
+  print_section "系统信息"
+  print_kv "内核" "$KERNEL_NAME $KERNEL_RELEASE"
+  print_kv "CPU 核心数" "$CPU_CORES"
+  print_kv "CPU 型号" "$CPU_MODEL"
+  print_kv "AES 加速" "$(cn_aes "$CPU_AES")"
+  print_kv "内存" "${RAM_MB} MB"
+  print_kv "虚拟化" "$VIRT_TYPE"
 
-  print_section "Network"
-  print_kv "public ip" "$PUBLIC_IP"
-  print_kv "public ipv6" "$PUBLIC_IPV6"
+  print_section "网络信息"
+  print_kv "公网 IPv4" "$PUBLIC_IP"
+  print_kv "公网 IPv6" "$PUBLIC_IPV6"
   print_kv "asn/org" "${PUBLIC_ASN:-} ${PUBLIC_ORG:-}"
-  print_kv "location" "${PUBLIC_CITY:-unknown}, ${PUBLIC_REGION:-unknown}, ${PUBLIC_COUNTRY:-unknown}"
-  print_kv "default iface" "$DEFAULT_IFACE"
-  print_kv "iface mtu" "$IFACE_MTU"
-  print_kv "iface qdisc" "$IFACE_QDISC"
-  print_kv "nic speed" "${NIC_SPEED_MBPS:-unknown} Mbps"
+  print_kv "位置" "${PUBLIC_CITY:-未知}, ${PUBLIC_REGION:-未知}, ${PUBLIC_COUNTRY:-未知}"
+  print_kv "默认网卡" "$DEFAULT_IFACE"
+  print_kv "网卡 MTU" "$IFACE_MTU"
+  print_kv "网卡 qdisc" "$IFACE_QDISC"
+  print_kv "网卡速率" "${NIC_SPEED_MBPS:-未知} Mbps"
 
-  print_section "TCP State"
-  print_kv "current cc" "$CURRENT_CC"
-  print_kv "available cc" "$AVAILABLE_CC"
-  print_kv "default qdisc" "$CURRENT_QDISC"
-  print_kv "requested cc" "$REQUESTED_CC"
-  print_kv "requested cc state" "$BBR_STATE"
+  print_section "TCP 状态"
+  print_kv "当前拥塞控制" "$CURRENT_CC"
+  print_kv "可用拥塞控制" "$AVAILABLE_CC"
+  print_kv "默认 qdisc" "$CURRENT_QDISC"
+  print_kv "目标拥塞控制" "$REQUESTED_CC"
+  print_kv "目标算法状态" "$(cn_bbr_state "$BBR_STATE")"
 
-  print_section "Path Measurements"
+  print_section "链路探测"
   if [ "${#PING_LABELS[@]}" -eq 0 ]; then
-    printf '  No ping measurements.\n'
+    printf '  没有 ping 探测结果。\n'
   else
-    printf '  %-18s %-16s %-8s %-8s %-10s %-10s %-10s %-10s\n' "label" "host" "status" "loss%" "min" "avg" "max" "jitter"
+    printf '  %-18s %-16s %-8s %-8s %-10s %-10s %-10s %-10s\n' "标签" "目标" "状态" "丢包%" "最小" "平均" "最大" "抖动"
     local i
     for ((i=0; i<${#PING_LABELS[@]}; i++)); do
       printf '  %-18s %-16s %-8s %-8s %-10s %-10s %-10s %-10s\n' \
-        "${PING_LABELS[$i]}" "${PING_HOSTS[$i]}" "${PING_STATUS[$i]}" \
+        "${PING_LABELS[$i]}" "${PING_HOSTS[$i]}" "$(cn_status "${PING_STATUS[$i]}")" \
         "${PING_LOSS[$i]:-}" "${PING_MIN[$i]:-}" "${PING_AVG[$i]:-}" \
         "${PING_MAX[$i]:-}" "${PING_JITTER[$i]:-}"
     done
@@ -1292,26 +1393,26 @@ print_report() {
     done
   fi
 
-  print_section "Calculation"
-  print_kv "target bandwidth" "${TARGET_BANDWIDTH_MBPS} Mbps ($BANDWIDTH_SOURCE)"
-  print_kv "profile/protocol" "$PROFILE / $PROTOCOL"
-  print_kv "concurrency" "$CONCURRENCY"
-  print_kv "effective rtt" "${EFFECTIVE_RTT_MS} ms"
-  print_kv "effective loss" "${EFFECTIVE_LOSS_PERCENT}%"
-  print_kv "effective jitter" "${EFFECTIVE_JITTER_MS} ms"
-  print_kv "line quality" "$LINE_QUALITY"
+  print_section "计算结果"
+  print_kv "目标带宽" "${TARGET_BANDWIDTH_MBPS} Mbps ($(cn_source "$BANDWIDTH_SOURCE"))"
+  print_kv "优化目标/协议" "$(cn_profile "$PROFILE") / $(cn_protocol "$PROTOCOL")"
+  print_kv "并发数" "$CONCURRENCY"
+  print_kv "有效 RTT" "${EFFECTIVE_RTT_MS} ms"
+  print_kv "有效丢包" "${EFFECTIVE_LOSS_PERCENT}%"
+  print_kv "有效抖动" "${EFFECTIVE_JITTER_MS} ms"
+  print_kv "线路质量" "$(cn_quality "$LINE_QUALITY")"
   print_kv "bdp" "${BDP_MB} MB"
-  print_kv "loss factor" "$LOSS_FACTOR"
-  print_kv "raw buffer target" "$(format_float "$RAW_BUFFER_MB" 1) MB"
-  print_kv "recommended buffer" "${RECOMMENDED_BUFFER_MB} MB (${RECOMMENDED_BUFFER_BYTES} bytes)"
+  print_kv "丢包系数" "$LOSS_FACTOR"
+  print_kv "原始 buffer 目标" "$(format_float "$RAW_BUFFER_MB" 1) MB"
+  print_kv "推荐 buffer" "${RECOMMENDED_BUFFER_MB} MB (${RECOMMENDED_BUFFER_BYTES} bytes)"
   print_kv "backlog" "$RECOMMENDED_BACKLOG"
-  print_kv "conntrack max" "$RECOMMENDED_CONNTRACK"
+  print_kv "conntrack 上限" "$RECOMMENDED_CONNTRACK"
 
-  print_section "Recommended sysctl"
+  print_section "推荐 sysctl 配置"
   generate_config
 
   if [ "${#WARNINGS[@]}" -gt 0 ]; then
-    print_section "Warnings"
+    print_section "警告"
     local w
     for w in "${WARNINGS[@]}"; do
       printf '  - %s\n' "$w"
@@ -1319,20 +1420,20 @@ print_report() {
   fi
 
   if [ "${#NOTES[@]}" -gt 0 ]; then
-    print_section "Notes"
+    print_section "提示"
     local n
     for n in "${NOTES[@]}"; do
       printf '  - %s\n' "$n"
     done
   fi
 
-  print_section "Next"
+  print_section "下一步"
   if [ "$APPLY" -eq 1 ]; then
-    printf '  Applying config to %s\n' "$CONF_PATH"
+    printf '  正在应用配置到 %s\n' "$CONF_PATH"
   else
-    printf '  Interactive apply: sudo bash %s --interactive\n' "$0"
-    printf '  CLI apply: sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$0" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
-    printf '  To verify after applying: sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc && ss -tin | grep -i bbr\n'
+    printf '  交互式应用：sudo bash %s --interactive\n' "$0"
+    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s --profile %s --protocol %s --apply\n' "$0" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$PROFILE" "$PROTOCOL"
+    printf '  应用后验证：sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc && ss -tin | grep -i bbr\n'
   fi
 }
 
@@ -1417,17 +1518,19 @@ print_json() {
 }
 
 apply_config() {
+  progress "应用阶段开始"
   if [ "$IS_LINUX" -ne 1 ]; then
-    printf 'ERROR: --apply is only supported on Linux.\n' >&2
+    printf '错误：--apply 只支持 Linux。\n' >&2
     return 1
   fi
   if [ "$(id -u 2>/dev/null || printf 1)" -ne 0 ]; then
-    printf 'ERROR: --apply requires root. Re-run with sudo.\n' >&2
+    printf '错误：--apply 需要 root 权限，请使用 sudo 重新运行。\n' >&2
     return 1
   fi
 
   if [ "$REQUESTED_CC" = "bbr" ] && ! printf ' %s ' "$(get_sysctl net.ipv4.tcp_available_congestion_control)" | grep -q ' bbr '; then
     if command_exists modprobe; then
+      progress "尝试加载 tcp_bbr 模块"
       modprobe tcp_bbr 2>/dev/null || true
     fi
   fi
@@ -1435,28 +1538,32 @@ apply_config() {
   local dir tmp backup
   dir="$(dirname "$CONF_PATH")"
   if [ ! -d "$dir" ]; then
-    printf 'ERROR: config directory does not exist: %s\n' "$dir" >&2
+    printf '错误：配置目录不存在：%s\n' "$dir" >&2
     return 1
   fi
 
   tmp="$(mktemp "${dir}/.bbr-auto-tune.XXXXXX")" || return 1
+  progress "生成 sysctl 配置临时文件"
   generate_config > "$tmp"
 
   if [ -f "$CONF_PATH" ]; then
     backup="${CONF_PATH}.bak.$(date +%Y%m%d-%H%M%S)"
+    progress "备份旧配置: $backup"
     cp "$CONF_PATH" "$backup"
-    printf 'Backup written: %s\n' "$backup"
+    printf '已备份旧配置：%s\n' "$backup"
   fi
 
+  progress "写入配置: $CONF_PATH"
   cp "$tmp" "$CONF_PATH"
   rm -f "$tmp"
-  printf 'Config written: %s\n' "$CONF_PATH"
+  printf '已写入配置：%s\n' "$CONF_PATH"
 
   if command_exists sysctl; then
+    progress "执行 sysctl --system"
     if sysctl --system >/tmp/bbr-auto-tune-sysctl.log 2>&1; then
-      printf 'sysctl --system applied successfully.\n'
+      printf 'sysctl --system 已成功应用。\n'
     else
-      printf 'WARNING: sysctl --system reported errors. Output follows:\n' >&2
+      printf '警告：sysctl --system 报错，输出如下：\n' >&2
       cat /tmp/bbr-auto-tune-sysctl.log >&2
       return 1
     fi
@@ -1464,38 +1571,40 @@ apply_config() {
 
   if [ "$LIVE_QDISC" -eq 1 ] && command_exists tc && [ -n "$DEFAULT_IFACE" ]; then
     if ! tc qdisc show dev "$DEFAULT_IFACE" 2>/dev/null | grep -qw fq; then
+      progress "尝试立即把当前网卡 $DEFAULT_IFACE 的 qdisc 切到 fq"
       if tc qdisc replace dev "$DEFAULT_IFACE" root fq >/dev/null 2>&1; then
-        printf 'Live qdisc applied: %s -> fq\n' "$DEFAULT_IFACE"
+        printf '已立即应用 qdisc：%s -> fq\n' "$DEFAULT_IFACE"
       else
-        printf 'NOTE: could not apply live fq qdisc on %s. The sysctl default is still set; reboot or apply manually if needed.\n' "$DEFAULT_IFACE" >&2
+        printf '提示：未能立即把 %s 的 qdisc 切到 fq。sysctl 默认值已经设置；如有需要，可重启或手动应用。\n' "$DEFAULT_IFACE" >&2
       fi
     fi
   fi
 
-  printf 'Verify:\n'
+  printf '验证：\n'
   sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc 2>/dev/null || true
+  progress "应用阶段完成"
 }
 
 rollback_config() {
   if [ "$IS_LINUX" -ne 1 ]; then
-    printf 'ERROR: --rollback is only supported on Linux.\n' >&2
+    printf '错误：--rollback 只支持 Linux。\n' >&2
     return 1
   fi
   if [ "$(id -u 2>/dev/null || printf 1)" -ne 0 ]; then
-    printf 'ERROR: --rollback requires root. Re-run with sudo.\n' >&2
+    printf '错误：--rollback 需要 root 权限，请使用 sudo 重新运行。\n' >&2
     return 1
   fi
 
   local backup
   backup="$(ls -t "${CONF_PATH}".bak.* 2>/dev/null | head -n 1 || true)"
   if [ -z "$backup" ]; then
-    printf 'ERROR: no backup found for %s\n' "$CONF_PATH" >&2
+    printf '错误：没有找到 %s 的备份。\n' "$CONF_PATH" >&2
     return 1
   fi
   cp "$backup" "$CONF_PATH"
-  printf 'Restored backup: %s -> %s\n' "$backup" "$CONF_PATH"
+  printf '已恢复备份：%s -> %s\n' "$backup" "$CONF_PATH"
   sysctl --system >/tmp/bbr-auto-tune-sysctl.log 2>&1 || {
-    printf 'WARNING: sysctl --system reported errors. Output follows:\n' >&2
+    printf '警告：sysctl --system 报错，输出如下：\n' >&2
     cat /tmp/bbr-auto-tune-sysctl.log >&2
     return 1
   }
@@ -1518,6 +1627,13 @@ parse_args() {
         ;;
       --non-interactive)
         INTERACTIVE=0
+        ;;
+      --progress)
+        PROGRESS=1
+        ;;
+      --quiet)
+        PROGRESS=0
+        QUIET_REQUESTED=1
         ;;
       --apply)
         APPLY=1
@@ -1588,7 +1704,7 @@ parse_args() {
         CONF_PATH="${1:-}"
         ;;
       *)
-        printf 'Unknown option: %s\n\n' "$1" >&2
+        printf '未知选项：%s\n\n' "$1" >&2
         usage >&2
         exit 2
         ;;
@@ -1605,30 +1721,30 @@ parse_args() {
 
 validate_options() {
   if ! is_number "$TARGET_BANDWIDTH_MBPS" && [ -n "$TARGET_BANDWIDTH_MBPS" ]; then
-    printf 'ERROR: --bandwidth must be a number in Mbps.\n' >&2
+    printf '错误：--bandwidth 必须是数字，单位 Mbps。\n' >&2
     exit 2
   fi
   if ! is_integer "$CONCURRENCY" || [ "$CONCURRENCY" -lt 1 ]; then
-    printf 'ERROR: --concurrency must be a positive integer.\n' >&2
+    printf '错误：--concurrency 必须是正整数。\n' >&2
     exit 2
   fi
   if ! is_integer "$PING_COUNT" || [ "$PING_COUNT" -lt 1 ]; then
-    printf 'ERROR: --ping-count must be a positive integer.\n' >&2
+    printf '错误：--ping-count 必须是正整数。\n' >&2
     exit 2
   fi
   if ! is_integer "$PING_TIMEOUT" || [ "$PING_TIMEOUT" -lt 1 ]; then
-    printf 'ERROR: --ping-timeout must be a positive integer.\n' >&2
+    printf '错误：--ping-timeout 必须是正整数。\n' >&2
     exit 2
   fi
   if ! is_integer "$MTR_COUNT" || [ "$MTR_COUNT" -lt 1 ]; then
-    printf 'ERROR: --mtr-count must be a positive integer.\n' >&2
+    printf '错误：--mtr-count 必须是正整数。\n' >&2
     exit 2
   fi
 
   case "$PROFILE" in
     balanced|throughput|latency|concurrency) ;;
     *)
-      printf 'ERROR: --profile must be balanced, throughput, latency, or concurrency.\n' >&2
+      printf '错误：--profile 必须是 balanced、throughput、latency 或 concurrency。\n' >&2
       exit 2
       ;;
   esac
@@ -1636,43 +1752,58 @@ validate_options() {
   case "$PROTOCOL" in
     tcp|quic|mixed) ;;
     *)
-      printf 'ERROR: --protocol must be tcp, quic, or mixed.\n' >&2
+      printf '错误：--protocol 必须是 tcp、quic 或 mixed。\n' >&2
       exit 2
       ;;
   esac
 
   if [ "$SPEEDTEST" -eq 1 ]; then
-    add_note "--speedtest is reserved for future use; no third-party speedtest is run automatically."
+    add_note "--speedtest 是预留选项，当前不会自动运行第三方 speedtest。"
   fi
 }
 
 main() {
   parse_args "$@"
+  progress "启动 BBR Auto Tune v$VERSION"
+  progress "检测系统平台"
   detect_platform
 
   if [ "$ROLLBACK" -eq 1 ]; then
+    progress "执行回滚"
     rollback_config
     exit $?
   fi
 
+  progress "检测 CPU、内存、虚拟化环境"
   detect_system
+  progress "检测公网 IP、ASN、地理位置"
   detect_public_network
+  progress "检测默认网卡、MTU、qdisc、网卡速率"
   detect_interface
+  progress "检测当前 TCP 拥塞控制和 BBR 可用性"
   detect_tcp_state
+  progress "开始链路质量探测"
   measure_paths
+  progress "根据 BDP、丢包、内存、并发计算推荐参数"
   calculate_recommendations
+  progress "计算完成: RTT=${EFFECTIVE_RTT_MS}ms loss=${EFFECTIVE_LOSS_PERCENT}% buffer=${RECOMMENDED_BUFFER_MB}MB"
 
   if [ "$SHOW_CONFIG" -eq 1 ]; then
+    progress "输出 sysctl 配置"
     generate_config
   elif [ "$JSON" -eq 1 ]; then
+    progress "输出 JSON 报告"
     print_json
   else
+    progress "输出人类可读报告"
     print_report
   fi
 
   if [ "$APPLY" -eq 1 ]; then
     apply_config
   fi
+
+  progress "全部完成"
 }
 
 main "$@"
