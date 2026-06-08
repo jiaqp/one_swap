@@ -8,7 +8,7 @@
 
 set -uo pipefail
 
-VERSION="1.6.0"
+VERSION="1.8.0"
 CONF_PATH="/etc/sysctl.d/99-bbr-auto-tune.conf"
 
 APPLY=0
@@ -29,12 +29,13 @@ CHINA_CARRIER="public"
 PING_COUNT=12
 PING_TIMEOUT=2
 MTR_COUNT=30
+RTT_METHOD="avg"
 
 TARGET_BANDWIDTH_MBPS=""
 BANDWIDTH_SOURCE="fallback"
 CONCURRENCY=4
 PROFILE="balanced"
-PROTOCOL="mixed"
+PROTOCOL="tcp"
 REQUESTED_CC="bbr"
 
 KERNEL_NAME=""
@@ -133,7 +134,7 @@ bbr-auto-tune.sh - 面向代理服务器的 BBR/TCP 自动优化计算脚本
   --bandwidth MBPS        服务器套餐带宽，单位 Mbps。
                           不填写时优先尝试 ethtool，识别不到则按 1000 Mbps 估算。
   --concurrency N         预计同时活跃用户/高速连接数。默认 4。
-  --protocol NAME         代理协议类型：tcp, quic, mixed。默认 mixed。
+  --protocol NAME         代理协议类型：tcp, quic, mixed。默认 tcp。
   --profile NAME          优化目标：balanced, throughput, latency, concurrency。
                           默认 balanced。
   --cc NAME               推荐使用的拥塞控制算法。默认 bbr。
@@ -141,6 +142,8 @@ bbr-auto-tune.sh - 面向代理服务器的 BBR/TCP 自动优化计算脚本
 检测选项：
   --ping-count N          每个目标 ping 次数。默认 12。
   --ping-timeout SEC      每个 ping 包超时时间，单位秒。默认 2。
+  --rtt-method NAME       有效 RTT 计算方式。默认 avg。
+                          可选：avg=平均值，cleanavg=低丢包平均值，p75=保守 P75，max=最慢成功目标。
   --mtr-count N           深度检测时 MTR 轮数。默认 30。
 
 应用选项：
@@ -592,18 +595,18 @@ EOF
     cat <<'EOF'
 
 请选择代理协议类型：
-  1) mixed：混合/不确定（推荐）
-  2) tcp：Xray/Reality/WS/gRPC/Nginx/Haproxy 等 TCP 类
+  1) tcp：Xray/Reality/WS/gRPC/Nginx/Haproxy 等 TCP 类（推荐）
+  2) mixed：混合/不确定
   3) quic：Hysteria2/TUIC/HTTP3 等 QUIC/UDP 类
 EOF
     prompt_read "协议 [1]: "
     case "${PROMPT_REPLY:-1}" in
       1|"")
-        PROTOCOL="mixed"
+        PROTOCOL="tcp"
         break
         ;;
       2)
-        PROTOCOL="tcp"
+        PROTOCOL="mixed"
         break
         ;;
       3)
@@ -687,6 +690,39 @@ EOF
     esac
   done
 
+  while true; do
+    cat <<'EOF'
+
+请选择有效 RTT 计算方式：
+  1) 平均值：成功目标 avg RTT 的平均值（推荐，更稳定）
+  2) 低丢包平均值：只平均丢包低于 10% 的成功目标
+  3) 保守 P75：偏向较慢线路，buffer 会更保守
+  4) 最慢成功目标：最保守，适合只想兜底
+EOF
+    prompt_read "RTT 计算方式 [1]: "
+    case "${PROMPT_REPLY:-1}" in
+      1|"")
+        RTT_METHOD="avg"
+        break
+        ;;
+      2)
+        RTT_METHOD="cleanavg"
+        break
+        ;;
+      3)
+        RTT_METHOD="p75"
+        break
+        ;;
+      4)
+        RTT_METHOD="max"
+        break
+        ;;
+      *)
+        printf '请输入 1-4。\n'
+        ;;
+    esac
+  done
+
   if prompt_yes_no "是否启用深度路由检测 mtr/tracepath？会更慢。" "n"; then
     DEEP=1
   else
@@ -738,6 +774,7 @@ EOF
   printf '  协议/目标: %s / %s\n' "$PROTOCOL" "$PROFILE"
   printf '  并发: %s\n' "$CONCURRENCY"
   printf '  ping 次数: %s\n' "$PING_COUNT"
+  printf '  RTT 计算: %s\n' "$(cn_rtt_method "$RTT_METHOD")"
   printf '  深度检测: %s\n' "$([ "$DEEP" -eq 1 ] && printf '开启' || printf '关闭')"
   printf '  网络探测: %s\n' "$([ "$NO_NETWORK" -eq 1 ] && printf '跳过' || printf '开启')"
   printf '  实时进度: %s\n' "$([ "$PROGRESS" -eq 1 ] && printf '开启' || printf '关闭')"
@@ -1175,6 +1212,42 @@ percentile_from_args() {
     }'
 }
 
+average_from_args() {
+  [ "$#" -eq 0 ] && return 1
+  printf '%s\n' "$@" | awk '
+    NF {
+      sum += $1
+      n += 1
+    }
+    END {
+      if (n == 0) exit 1
+      printf "%.3f\n", sum / n
+    }'
+}
+
+max_from_args() {
+  [ "$#" -eq 0 ] && return 1
+  printf '%s\n' "$@" | awk '
+    NF {
+      if (n == 0 || $1 > max) max = $1
+      n += 1
+    }
+    END {
+      if (n == 0) exit 1
+      printf "%.3f\n", max
+    }'
+}
+
+cn_rtt_method() {
+  case "${1:-avg}" in
+    avg) printf '成功目标平均值(avg)' ;;
+    cleanavg) printf '低丢包目标平均值(cleanavg)' ;;
+    p75) printf '保守 P75(p75)' ;;
+    max) printf '最慢成功目标(max)' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 fallback_rtt_for_region() {
   case "$(to_lower "$REGION")" in
     china|cn) printf '180' ;;
@@ -1188,6 +1261,7 @@ fallback_rtt_for_region() {
 
 derive_effective_path() {
   local rtts=()
+  local clean_rtts=()
   local losses=()
   local jitters=()
   local i
@@ -1195,7 +1269,12 @@ derive_effective_path() {
   for ((i=0; i<${#PING_AVG[@]}; i++)); do
     if is_number "${PING_AVG[$i]:-}"; then
       rtts+=("${PING_AVG[$i]}")
-      losses+=("$(positive_or_default "${PING_LOSS[$i]:-}" 0)")
+      local loss_value
+      loss_value="$(positive_or_default "${PING_LOSS[$i]:-}" 0)"
+      losses+=("$loss_value")
+      if awk -v loss="$loss_value" 'BEGIN { exit !(loss < 10) }'; then
+        clean_rtts+=("${PING_AVG[$i]}")
+      fi
       if is_number "${PING_JITTER[$i]:-}"; then
         jitters+=("${PING_JITTER[$i]}")
       fi
@@ -1203,7 +1282,25 @@ derive_effective_path() {
   done
 
   if [ "${#rtts[@]}" -gt 0 ]; then
-    EFFECTIVE_RTT_MS="$(percentile_from_args 75 "${rtts[@]}" 2>/dev/null || true)"
+    case "$RTT_METHOD" in
+      avg)
+        EFFECTIVE_RTT_MS="$(average_from_args "${rtts[@]}" 2>/dev/null || true)"
+        ;;
+      cleanavg)
+        if [ "${#clean_rtts[@]}" -gt 0 ]; then
+          EFFECTIVE_RTT_MS="$(average_from_args "${clean_rtts[@]}" 2>/dev/null || true)"
+        else
+          EFFECTIVE_RTT_MS="$(average_from_args "${rtts[@]}" 2>/dev/null || true)"
+          add_warning "没有丢包低于 10% 的成功目标，RTT 计算已从 cleanavg 回退到 avg。"
+        fi
+        ;;
+      p75)
+        EFFECTIVE_RTT_MS="$(percentile_from_args 75 "${rtts[@]}" 2>/dev/null || true)"
+        ;;
+      max)
+        EFFECTIVE_RTT_MS="$(max_from_args "${rtts[@]}" 2>/dev/null || true)"
+        ;;
+    esac
   fi
   if [ "${#losses[@]}" -gt 0 ]; then
     EFFECTIVE_LOSS_PERCENT="$(percentile_from_args 75 "${losses[@]}" 2>/dev/null || true)"
@@ -1430,6 +1527,7 @@ generate_config() {
 # 协议类型：$PROTOCOL
 # 客户端地区：$REGION
 # 中国线路：$([ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ] && cn_china_carrier "$CHINA_CARRIER" || printf '不适用')
+# RTT 计算方式：$(cn_rtt_method "$RTT_METHOD")
 # 目标带宽：${TARGET_BANDWIDTH_MBPS} Mbps ($(cn_source "$BANDWIDTH_SOURCE"))
 # 有效 RTT/丢包/抖动：${EFFECTIVE_RTT_MS} ms / ${EFFECTIVE_LOSS_PERCENT}% / ${EFFECTIVE_JITTER_MS} ms
 # BDP: ${BDP_MB} MB
@@ -1585,10 +1683,11 @@ script_display_path() {
 }
 
 print_report() {
-  local self_path carrier_arg targets_arg
+  local self_path carrier_arg targets_arg rtt_arg
   self_path="$(script_display_path)"
   carrier_arg=""
   targets_arg=""
+  rtt_arg=""
 
   if [ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ]; then
     case "$CHINA_CARRIER" in
@@ -1605,6 +1704,9 @@ print_report() {
         targets_arg=" --targets \"$TARGETS_RAW\""
         ;;
     esac
+  fi
+  if [ "$RTT_METHOD" != "avg" ]; then
+    rtt_arg=" --rtt-method $RTT_METHOD"
   fi
 
   printf 'BBR Auto Tune v%s\n' "$VERSION"
@@ -1667,6 +1769,7 @@ print_report() {
   if [ "$(to_lower "$REGION")" = "china" ] || [ "$(to_lower "$REGION")" = "cn" ]; then
     print_kv "中国线路" "$(cn_china_carrier "$CHINA_CARRIER")"
   fi
+  print_kv "RTT 计算方式" "$(cn_rtt_method "$RTT_METHOD")"
   print_kv "并发数" "$CONCURRENCY"
   print_kv "有效 RTT" "${EFFECTIVE_RTT_MS} ms"
   print_kv "有效丢包" "${EFFECTIVE_LOSS_PERCENT}%"
@@ -1703,7 +1806,7 @@ print_report() {
     printf '  正在应用配置到 %s\n' "$CONF_PATH"
   else
     printf '  交互式应用：sudo bash %s --interactive\n' "$self_path"
-    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s%s --profile %s --protocol %s%s --apply\n' "$self_path" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$carrier_arg" "$PROFILE" "$PROTOCOL" "$targets_arg"
+    printf '  命令行应用：sudo bash %s --bandwidth %s --region %s%s --profile %s --protocol %s%s%s --apply\n' "$self_path" "$TARGET_BANDWIDTH_MBPS" "$REGION" "$carrier_arg" "$PROFILE" "$PROTOCOL" "$rtt_arg" "$targets_arg"
     printf '  应用后验证：sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc && ss -tin | grep -i bbr\n'
   fi
 }
@@ -1757,6 +1860,7 @@ print_json() {
   printf '    "bandwidth_source": "%s",\n' "$(json_escape "$BANDWIDTH_SOURCE")"
   printf '    "profile": "%s",\n' "$(json_escape "$PROFILE")"
   printf '    "protocol": "%s",\n' "$(json_escape "$PROTOCOL")"
+  printf '    "rtt_method": "%s",\n' "$(json_escape "$RTT_METHOD")"
   printf '    "concurrency": %s,\n' "$CONCURRENCY"
   printf '    "effective_rtt_ms": "%s",\n' "$(json_escape "$EFFECTIVE_RTT_MS")"
   printf '    "effective_loss_percent": "%s",\n' "$(json_escape "$EFFECTIVE_LOSS_PERCENT")"
@@ -1975,6 +2079,10 @@ parse_args() {
         shift
         PING_TIMEOUT="${1:-}"
         ;;
+      --rtt-method)
+        shift
+        RTT_METHOD="$(to_lower "${1:-}")"
+        ;;
       --mtr-count)
         shift
         MTR_COUNT="${1:-}"
@@ -2033,6 +2141,14 @@ validate_options() {
     tcp|quic|mixed) ;;
     *)
       printf '错误：--protocol 必须是 tcp、quic 或 mixed。\n' >&2
+      exit 2
+      ;;
+  esac
+
+  case "$RTT_METHOD" in
+    avg|cleanavg|p75|max) ;;
+    *)
+      printf '错误：--rtt-method 必须是 avg、cleanavg、p75 或 max。\n' >&2
       exit 2
       ;;
   esac
